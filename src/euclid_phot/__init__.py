@@ -11,7 +11,7 @@ Pipeline order:
     extract_catalog_psf      psf.py
     build_tractor_image      images.py
     build_sources_from_mer   models.py        (default)
-       --or--
+       or
     detect_blobs + ModelSelector.fit_blob     selection.py (alternative)
     fit_forced_photometry    fit.py
     fit_free_shapes          fit.py
