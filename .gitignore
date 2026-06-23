@@ -1,0 +1,38 @@
+# Bundled tutorial data (downloaded by `python -m euclid_phot.examples_data`)
+examples/data/
+examples/tutorial-data-*.tar.gz
+
+# Working caches the engine may write at runtime
+data/
+**/_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Linters
+.ruff_cache/
+.mypy_cache/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Catalog written by notebook 01 section 16
+*.ecsv
+
+# Vendored GitHub installs
+.anet/
+.unwise_psf/

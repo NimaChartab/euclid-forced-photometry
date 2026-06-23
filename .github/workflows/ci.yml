@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  notebooks:
+    name: execute notebooks
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: System deps (for FITSIO / unwise_psf)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcfitsio-dev libwcs-dev libbz2-dev
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Install Tractor + astrometry.net utils (not on PyPI)
+        run: |
+          python -m pip install cython
+          python -m pip install --no-build-isolation "git+https://github.com/dstndstn/tractor.git"
+          mkdir -p .anet
+          git clone --depth 1 https://github.com/dstndstn/astrometry.net.git .anet/astrometry
+          python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'astrometry_net.pth').write_text(str(pathlib.Path('.anet').resolve()))"
+          python -c "from tractor import Tractor; from astrometry.util.ttime import Time; print('tractor + astrometry.util OK')"
+
+      - name: Install unwise_psf + fitsio (optional WISE leg)
+        run: |
+          git clone --depth 1 https://github.com/legacysurvey/unwise_psf .unwise_psf
+          python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'unwise_psf.pth').write_text(str(pathlib.Path('.unwise_psf/py').resolve()))"
+          python -m pip install fitsio "setuptools<81"
+          python -c "from unwise_psf import unwise_psf; print('unwise_psf OK')"
+
+      - name: Fetch tutorial data
+        env:
+          EUCLID_PHOT_DATA_URL: ${{ secrets.EUCLID_PHOT_DATA_URL }}
+        run: |
+          python -m euclid_phot.examples_data
+
+      - name: Execute notebooks
+        run: |
+          for nb in notebooks/*.ipynb; do
+            jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=3600 "$nb"
+          done
+
+      - name: Upload executed notebooks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: executed-notebooks-py${{ matrix.python-version }}
+          path: notebooks/*.ipynb
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: python -m pip install ruff
+      - run: ruff check src
