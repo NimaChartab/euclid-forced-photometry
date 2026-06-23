@@ -526,21 +526,24 @@ def _source_at_wise(vis_src, band: str, *, point: bool = False,
     return cloned
 
 
-def _supplement_sources(ra: float, dec: float, prior_radius_arcsec: float,
+def _supplement_sources(ra: float, dec: float,
                         existing_coords: SkyCoord,
                         *,
-                        merge_sep_arcsec: float = 3.0,
-                        min_radius_arcsec: float = 0.0):
-    """Pull unWISE-catalog sources in the PSF-wing buffer outside the
-    Euclid prior, excluding any within ``merge_sep_arcsec`` of an existing
-    Euclid source and any inside ``min_radius_arcsec`` of the field center.
+                        field_halfwidth_arcsec: float,
+                        buffer_halfwidth_arcsec: float,
+                        merge_sep_arcsec: float = 3.0):
+    """Pull unWISE-catalog sources in the PSF-wing buffer outside the Euclid
+    target box (but inside the WISE fit box), excluding any within
+    ``merge_sep_arcsec`` of an existing Euclid source.
 
-    Supplements inside the MER footprint can absorb W1/W2 flux that
-    belongs to a MER prior (a detection 4-10 arcsec from a MER galaxy may
-    be a sub-threshold counterpart or a confused blend), so they are used
-    only in the buffer ring.
+    Supplements inside the MER footprint can absorb W1/W2 flux that belongs
+    to a MER prior (a detection 4-10 arcsec from a MER galaxy may be a
+    sub-threshold counterpart or a confused blend), so they are used only in
+    the buffer.
     """
-    prior_radius_deg = prior_radius_arcsec / 3600.0
+    # Circle must reach the square buffer's corners.
+    query_radius_arcsec = buffer_halfwidth_arcsec * np.sqrt(2.0) + merge_sep_arcsec
+    query_radius_deg = query_radius_arcsec / 3600.0
     # Admit a primary detection in either band: the same list feeds both
     # fits, and a W2-primary source sub-threshold in W1 must still absorb
     # W2 wing flux.
@@ -548,7 +551,7 @@ def _supplement_sources(ra: float, dec: float, prior_radius_arcsec: float,
     SELECT ra, dec, flux_1, flux_2
     FROM unwise_2019
     WHERE CONTAINS(POINT('J2000',ra,dec),
-                   CIRCLE('J2000',{ra},{dec},{prior_radius_deg}))=1
+                   CIRCLE('J2000',{ra},{dec},{query_radius_deg}))=1
       AND (primary_1 = 1 OR primary_2 = 1)
     """
     from .netutils import retry
@@ -561,15 +564,17 @@ def _supplement_sources(ra: float, dec: float, prior_radius_arcsec: float,
     # reruns.
     uw_cat.sort(["ra", "dec"])
     uw_coord = SkyCoord(uw_cat["ra"], uw_cat["dec"], unit="deg")
-    center = SkyCoord(ra, dec, unit="deg")
-    keep = np.ones(len(uw_cat), dtype=bool)
-    if min_radius_arcsec > 0:
-        sep_center = uw_coord.separation(center).arcsec
-        keep &= sep_center >= min_radius_arcsec
+    # Offsets from field center in arcsec; RA scaled by cos(dec), wrapped at 0/360.
+    uw_ra = np.asarray(uw_cat["ra"], dtype=float)
+    uw_dec = np.asarray(uw_cat["dec"], dtype=float)
+    dra = (uw_ra - ra + 180.0) % 360.0 - 180.0
+    dx = np.abs(dra) * np.cos(np.radians(dec)) * 3600.0
+    dy = np.abs(uw_dec - dec) * 3600.0
+    inside_buffer = (dx <= buffer_halfwidth_arcsec) & (dy <= buffer_halfwidth_arcsec)
+    inside_field = (dx <= field_halfwidth_arcsec) & (dy <= field_halfwidth_arcsec)
+    keep = inside_buffer & ~inside_field
     if len(existing_coords) > 0:
-        for k in range(len(uw_cat)):
-            if not keep[k]:
-                continue
+        for k in np.nonzero(keep)[0]:
             if uw_coord[k].separation(existing_coords).arcsec.min() < merge_sep_arcsec:
                 keep[k] = False
     return uw_cat, keep
@@ -633,7 +638,6 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
     # mis-attributed to in-cutout neighbors.
     fit_size_arcsec = float(cutout_size_arcsec + 10 * _WISE_FWHM_ARCSEC)
     fit_size_pix = int(round(fit_size_arcsec / UNWISE_PIXEL_SCALE))
-    prior_radius_arcsec = fit_size_arcsec / 2.0 + 4 * _WISE_FWHM_ARCSEC
 
     src_coord = SkyCoord(
         [s.getPosition().ra for s in sources],
@@ -641,14 +645,13 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
 
     suppl_cat = suppl_mask = None
     if supplement_with_unwise_catalog:
-        # The MER footprint is a square, so the supplement exclusion radius
-        # is the half-diagonal plus one WISE FWHM; a half-side radius would
-        # leave the corner wedges exposed.
-        min_radius = cutout_size_arcsec / np.sqrt(2.0) + _WISE_FWHM_ARCSEC
+        # Buffer = fit box padded by 4 FWHM for wings, minus the target box.
         try:
             suppl_cat, suppl_mask = _supplement_sources(
-                ra, dec, prior_radius_arcsec, src_coord,
-                min_radius_arcsec=min_radius)
+                ra, dec, src_coord,
+                field_halfwidth_arcsec=cutout_size_arcsec / 2.0,
+                buffer_halfwidth_arcsec=fit_size_arcsec / 2.0
+                + 4 * _WISE_FWHM_ARCSEC)
         except Exception as exc:
             # Supplements only absorb buffer-ring wing flux; a transient
             # IRSA outage must not kill the W1/W2 measurement.
@@ -797,5 +800,6 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
             "model": mod,
             "data": data,
             "invvar": ivar,
+            "wcs": wcs_fit,
         }
     return results
