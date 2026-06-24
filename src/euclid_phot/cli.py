@@ -1,10 +1,8 @@
-"""Command-line interface: ``euclid-phot {run,fetch-data}``.
+"""Command-line interface: ``euclid-phot run``.
 
     euclid-phot run --ra 269.48 --dec 67.30 --size 50 --out catalog.ecsv
-    euclid-phot fetch-data
 
-``run`` measures a single cutout with the default MER-prior workflow;
-``fetch-data`` downloads the bundled demo cutouts.
+Measures a single cutout with the default MER-prior workflow.
 """
 from __future__ import annotations
 
@@ -54,8 +52,6 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="euclid-phot",
         description="Forced photometry on Euclid Q1 (+unWISE) with Tractor.")
-    parser.add_argument("--log-level", default="WARNING",
-                        help="euclid_phot logger level (default WARNING)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser("run", help="measure a single cutout")
@@ -68,19 +64,7 @@ def main(argv=None) -> int:
                             "(.ecsv/.fits/.parquet)")
     _add_common(p_run)
 
-    p_fetch = sub.add_parser("fetch-data",
-                             help="download the bundled demo data (~150 MB)")
-    p_fetch.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
-
     args = parser.parse_args(argv)
-
-    from ._log import configure_logging
-    configure_logging(args.log_level.upper())
-
-    if args.command == "fetch-data":
-        from . import examples_data
-        examples_data.fetch(args.data_dir)
-        return 0
 
     if args.command == "run":
         from .pipeline import run_forced_photometry

@@ -22,8 +22,6 @@ import warnings
 
 import numpy as np
 
-_UJY_PER_NMGY = 3.631
-
 # MER catalog flux column per Euclid band (matches pipeline._MER_FLUX_COL).
 _FLUX_COL = {"VIS": "flux_vis_sersic", "Y": "flux_y_sersic",
              "J": "flux_j_sersic", "H": "flux_h_sersic"}

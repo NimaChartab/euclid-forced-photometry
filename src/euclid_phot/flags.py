@@ -241,9 +241,9 @@ def bright_star_pixel_mask(shape, wcs, ra, dec, fluxes_ujy, is_star, *,
 
     The MER CATALOG-PSF stamps span only ~±1 arcsec, so a bright star's
     halo and spikes are unmodeled light: the star's own flux comes out ~10%
-    high and a neighbor on a spike inherits the bias. The default defense
-    is the MER FLG STARSIGNAL bit (``mask_bright_stars=True``); this
-    function is the geometric fallback for data without the FLG plane
+    high and a neighbor on a spike inherits the bias. The recommended
+    defense is the MER FLG STARSIGNAL bit (set ``mask_bright_stars=True``);
+    this function is the geometric fallback for data without the FLG plane
     (cf. the Legacy Surveys BRIGHT/MEDIUM maskbits).
 
     The star's core (r <= ``core_keep_arcsec``) is not masked, since the PSF

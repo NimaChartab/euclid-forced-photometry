@@ -23,7 +23,7 @@ def query_ebv(ra: float, dec: float, *, data_dir=None) -> float:
 
     Returns the Schlafly & Finkbeiner (2011) rescaled mean E(B-V) at
     ``(ra, dec)``. The value is cached to
-    ``data_dir/ebv_<ra>_<dec>.json`` (atomic write) so a field is queried
+    ``data_dir/ebv_<ra>_<dec>.json`` so a field is queried
     once; offline runs on a cached field never touch the network.
     """
     cache = None
@@ -44,10 +44,8 @@ def query_ebv(ra: float, dec: float, *, data_dir=None) -> float:
 
     if cache is not None:
         cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"ebv": ebv, "ra": ra, "dec": dec,
-                                   "source": "IRSA dust, ext SandF mean"}))
-        tmp.replace(cache)
+        cache.write_text(json.dumps({"ebv": ebv, "ra": ra, "dec": dec,
+                                     "source": "IRSA dust, ext SandF mean"}))
     return ebv
 
 

@@ -72,15 +72,6 @@ DEFAULT_CUTOUT_DIR = DEFAULT_DATA_DIR / "cutouts"
 DEFAULT_PSF_DIR = DEFAULT_DATA_DIR / "psf"
 DEFAULT_WISE_CACHE_DIR = DEFAULT_DATA_DIR / "wise"
 
-# Pinned to the data-bundle release tag, which moves only when the bundled
-# files change. Override with EUCLID_PHOT_DATA_URL.
-TUTORIAL_DATA_URL = (
-    "https://github.com/nchartab/euclid-forced-photometry/"
-    "releases/download/v0.4.1-data/tutorial-data-v0.4.1.tar.gz"
-)
-TUTORIAL_DATA_SHA256: str | None = (
-    "a8c4235d34423e741902abd42fadf85b9de2286ee8422278d50528b4049cd92a"
-)
 
 # Demo target used by the notebooks.
 DEMO_TARGET_RA = 269.48

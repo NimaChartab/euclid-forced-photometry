@@ -25,8 +25,8 @@ def _clone_for_band(vis_src, band: str):
     """
     cloned = _copy.deepcopy(vis_src)
     cloned.brightness = NanoMaggies(**{band: 1.0})
-    # halfsize is a rendering hint in parent-image pixels; a VIS-fit value
-    # (0.1"/pix) would be misinterpreted on the 0.3"/pix NISP grid.
+    # halfsize is a render-patch size in pixels carried over from the VIS
+    # fit; clear it so each band's image sizes its own render patch.
     if hasattr(cloned, "halfsize"):
         cloned.halfsize = None
     return cloned
@@ -82,8 +82,8 @@ def fit_nisp_forced(sources, cutouts: dict, psf_stamps: dict,
         footprints) applies to the NISP cutouts unchanged.
     n_workers : int
         If > 1, fit the bands in parallel threads. The speedup depends on
-        whether Tractor's compiled ``_mp_fourier`` FFT releases the GIL
-        (build-dependent; ~1.4x at n_workers=4 on the reference build).
+        your Tractor build, since its compiled FFT may or may not run on
+        several threads at once (~1.4x at n_workers=4 on the reference build).
 
     Returns
     -------

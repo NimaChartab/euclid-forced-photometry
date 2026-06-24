@@ -61,7 +61,7 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
                         products: dict | None = None,
                         radius_arcsec: float = 60.0,
                         data_dir: str | Path = DEFAULT_PSF_DIR,
-                        show_download_path: bool = False) -> dict:
+                        force_download: bool = False) -> dict:
     """Download or load a region's worth of CATALOG-PSF stamps.
 
     Parameters
@@ -76,10 +76,10 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
         automatically (one SIA query).
     radius_arcsec : float
         Stamp acceptance radius around (ra, dec), capped at ~60-200 arcsec
-        for typical tutorial cutouts.
+        for typical cutout sizes.
     data_dir : Path
         Where to cache the extracted stamps as a small ``.npz``.
-    show_download_path : bool
+    force_download : bool
         If True, ignore the .npz cache and re-download from S3.
 
     Returns
@@ -87,22 +87,12 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
     dict with keys ``stamps``, ``ra``, ``dec``, ``x``, ``y``, ``fwhm``, ``stmpsize``.
     """
     data_dir = Path(data_dir)
-    # The bundled demo data ships a legacy cache name (band + radius only)
-    # holding the demo field's stamps; it is only a valid fallback for the
-    # demo target itself.
     cache = data_dir / (
         f"psf_stamps_{band.lower()}"
         f"_{ra:.4f}_{dec:.4f}"
         f"_r{int(round(radius_arcsec))}.npz"
     )
-    legacy_cache = data_dir / f"psf_stamps_{band.lower()}_r{int(round(radius_arcsec))}.npz"
-    from .config import DEMO_TARGET_DEC, DEMO_TARGET_RA
-    is_demo_target = (abs(ra - DEMO_TARGET_RA) < 1e-3
-                      and abs(dec - DEMO_TARGET_DEC) < 1e-3)
-    if (not cache.exists() and legacy_cache.exists() and is_demo_target
-            and not show_download_path):
-        cache = legacy_cache
-    if cache.exists() and not show_download_path:
+    if cache.exists() and not force_download:
         d = np.load(cache)
         return {
             "stamps":   d["stamps"],
@@ -195,8 +185,9 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
         }
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    # Atomic write. np.savez appends ".npz" to names that lack it, so the
-    # temp name keeps the suffix (foo.tmp.npz), not a trailing ".tmp".
+    # Write to a temp file first, then rename, so an interrupted run never
+    # leaves a half-written cache. np.savez appends ".npz" to names that lack
+    # it, so the temp name keeps the suffix (foo.tmp.npz), not a trailing ".tmp".
     tmp = cache.with_name(cache.stem + ".tmp" + cache.suffix)
     np.savez(tmp, **result)
     tmp.replace(cache)
@@ -219,7 +210,7 @@ def extract_grid_psf(band: str, ra: float, dec: float,
                      products: dict | None = None,
                      radius_arcsec: float = 60.0,
                      data_dir: str | Path = DEFAULT_PSF_DIR,
-                     show_download_path: bool = False) -> dict:
+                     force_download: bool = False) -> dict:
     """Download or load a region's worth of GRID-PSF stamps.
 
     GRID-PSF samples the tile's PSF model on a regular ~12 arcsec grid
@@ -243,7 +234,7 @@ def extract_grid_psf(band: str, ra: float, dec: float,
         f"_{ra:.4f}_{dec:.4f}"
         f"_r{int(round(radius_arcsec))}.npz"
     )
-    if cache.exists() and not show_download_path:
+    if cache.exists() and not force_download:
         d = np.load(cache)
         return {
             "stamps":   d["stamps"],

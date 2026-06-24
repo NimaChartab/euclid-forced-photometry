@@ -353,7 +353,7 @@ def fetch_unwise_cutouts(ra: float, dec: float, size_arcsec: float,
                          data_dir: str | Path = DEFAULT_WISE_CACHE_DIR,
                          version: str = WISE_COADD_VERSION,
                          bands=("W1", "W2"),
-                         show_download_path: bool = False) -> dict:
+                         force_download: bool = False) -> dict:
     """Download (or cache) unWISE coadds for a small field.
 
     Returns
@@ -366,7 +366,7 @@ def fetch_unwise_cutouts(ra: float, dec: float, size_arcsec: float,
     size_pix = int(round(size_arcsec / UNWISE_PIXEL_SCALE))
 
     tarball = data_dir / f"unwise_{ra:.4f}_{dec:.4f}_{int(round(size_arcsec))}.tar.gz"
-    if not tarball.exists() or show_download_path:
+    if not tarball.exists() or force_download:
         url = _unwise_cutout_url(ra, dec, size_pix, version)
         # unwise.me can return an HTML 200 on out-of-coverage targets;
         # download to .part and validate the gzip magic.
@@ -396,12 +396,11 @@ def fetch_unwise_cutouts(ra: float, dec: float, size_arcsec: float,
         raise RuntimeError(f"no FITS members in unwise tarball {tarball}")
     coadd_id = _closest_coadd_id(fits_members, ra, dec)
 
-    # The bundled demo ships a pre-aligned bitmask inside the tarball;
-    # macOS AppleDouble "._" sidecars are not valid FITS.
+    # If the tarball already carries an aligned bitmask, use it; otherwise
+    # the per-tile masks are fetched below.
     msk = None
     msk_members = [n for n in names
                    if "-msk" in n.split("/")[-1]
-                   and not n.split("/")[-1].startswith("._")
                    and n.endswith((".fits", ".fits.gz"))]
     if msk_members:
         with fits.open(extract_dir / msk_members[0].split("/")[-1]) as hdul:
@@ -779,8 +778,8 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
             chi_mad = float(mad_std(chi_pool))
             chi_infl = max(1.0, chi_mad) if np.isfinite(chi_mad) else 1.0
         with np.errstate(divide="ignore", invalid="ignore"):
-            # NaN for an unconstrained source, matching the VIS/NISP
-            # sentinel.
+            # NaN for an unconstrained source, matching the NaN used for
+            # VIS/NISP.
             flux_err_ab = np.where(flux_iv_ab > 0,
                                    chi_infl / np.sqrt(flux_iv_ab), np.nan)
 

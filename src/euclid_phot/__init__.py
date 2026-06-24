@@ -1,8 +1,8 @@
 """euclid_phot: forced photometry on Euclid Q1 with Tractor.
 
 The package exposes both the individual pipeline steps (used by the teaching
-notebooks) and a one-line wrapper (used by everything else). See the module
-docstrings for the I/O contract of each step.
+notebooks) and a one-call driver (used by everything else). See the module
+docstrings for the inputs and outputs of each step.
 
 Pipeline order:
 
@@ -21,11 +21,12 @@ Pipeline order:
 
 Beyond the single-cutout pipeline: ``run_injection_recovery``
 (injection.py) validates the photometry and errors on synthetic sources;
-the ``euclid-phot`` console script (cli.py) wraps the driver.
+the ``euclid-phot`` command-line script (cli.py) runs the driver.
 
-Imports are lazy on first use so the lightweight bundled-data downloader
-(``python -m euclid_phot.examples_data``) works in environments where
-Tractor and matplotlib are not yet installed.
+The package imports Tractor and matplotlib only when first used, so it
+loads quickly even before they are installed. The notebooks download their
+demo cutouts from IRSA/S3 on first run and cache them locally under
+``examples/data/``.
 """
 from __future__ import annotations
 
@@ -65,13 +66,10 @@ _LAZY = {
     # selection
     "SimpleGalaxy": ("selection", "SimpleGalaxy"),
     "ModelSelector": ("selection", "ModelSelector"),
-    "FarmerSelector": ("selection", "ModelSelector"),  # pre-v0.5.1 alias
     "detect_blobs": ("selection", "detect_blobs"),
     "assign_mer_to_blobs": ("selection", "assign_mer_to_blobs"),
     "run_model_selection": ("selection", "run_model_selection"),
-    "run_farmer_on_image": ("selection", "run_model_selection"),  # pre-v0.5.1 alias
     "reproduce_figure3": ("selection", "reproduce_figure3"),
-    "reproduce_figure4": ("selection", "reproduce_figure4"),  # back-compat alias
     # injection-recovery validation
     "make_truth_table": ("injection", "make_truth_table"),
     "inject_sources": ("injection", "inject_sources"),
@@ -105,8 +103,6 @@ _LAZY = {
     "build_catalog": ("catalog_table", "build_catalog"),
     "flux_to_ab_mag": ("catalog_table", "flux_to_ab_mag"),
     "flux_err_to_mag_err": ("catalog_table", "flux_err_to_mag_err"),
-    # logging
-    "configure_logging": ("_log", "configure_logging"),
     # submodules
     "config": ("config", None),
     "viz": ("viz", None),

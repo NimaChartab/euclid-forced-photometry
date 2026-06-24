@@ -20,7 +20,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-This tutorial builds on two upstream projects:
+This package builds on two upstream projects:
 - The Tractor (Lang, Hogg, et al.), GPL v2.
 - The Farmer (Weaver et al. 2023, ApJS 269, 20): the model-selection
   logic in src/euclid_phot/selection.py is reimplemented from their

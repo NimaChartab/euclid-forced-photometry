@@ -1215,10 +1215,11 @@ def _fit_one_blob(args):
 
 
 def _pack_blob(blob: Blob) -> dict:
-    """Bit-pack a Blob's full-frame boolean masks for cheap pickling.
+    """Bit-pack a Blob's full-frame boolean masks to shrink what is sent
+    to worker processes.
 
     A 2000x2000 footprint is 4 MB as bool and 0.5 MB packed; a field of a
-    few hundred blobs would otherwise serialize GBs to the worker pool.
+    few hundred blobs would otherwise copy gigabytes to each worker process.
     """
     pack = lambda m: (np.packbits(m), m.shape)  # noqa: E731
     return {
@@ -1274,10 +1275,11 @@ def run_model_selection(
     Parameters
     ----------
     n_workers : int, default 1
-        If >1, fit blobs in a process pool (blob fits are independent and
-        the optimizer hot path holds the GIL, so threads cannot scale
-        them). Falls back to threads if the worker payload fails to
-        pickle on an exotic source class.
+        If >1, fit blobs in a process pool (blob fits are independent, and
+        separate processes scale better here than threads, since the
+        optimizer runs single-threaded internally). Falls back to threads
+        if a blob cannot be sent to a separate process for an unusual
+        source class.
 
     Returns ``(sources_list, summary_dict)`` where ``sources_list`` is aligned
     1:1 with ``mer_cat`` (sources outside any blob get ``None``) and
@@ -1357,7 +1359,6 @@ def reproduce_figure3(
     row per (source, stage) trial with the model image (log stretch) and
     residual, annotated with the reduced chi^2 and a check on the accepted
     tier. σ is the sigma-clipped residual RMS outside the blob footprint.
-    ``reproduce_figure4`` is a backward-compatible alias.
     """
     import matplotlib.pyplot as plt
     from astropy.stats import sigma_clipped_stats
@@ -1451,8 +1452,4 @@ def reproduce_figure3(
     if save_path is not None:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig, axes
-
-
-# Backward-compatible alias.
-reproduce_figure4 = reproduce_figure3
 

@@ -12,7 +12,7 @@ Euclid and WISE bands to propagate to. The prior band is removed from
 source's VIS position and shape, fitting flux only, exactly as for NISP;
 ``source_models="point"`` instead collapses every source to a
 ``PointSource`` (Lang et al. 2016, sec 3.2), valid because every Euclid
-R_eff is unresolved at the 6 arcsec WISE PSF.
+R_eff is unresolved at the ~6.9 arcsec WISE PSF.
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _normalize_prior(prior: dict | None, *,
                 f"Allowed: 'band', 'objects', 'model_selection', "
                 f"'free_shapes', 'refine_positions', 'detect', 'selector'.")
         p.update(prior)
-    # objects="free" remains the pre-v0.5.1 shorthand for the tree path.
+    # objects="free" is shorthand for the tree path.
     ms = p.get("model_selection")
     if ms not in (None, "prior", "tree") + _EXPLICIT_MODELS:
         raise ValueError(
@@ -233,8 +233,8 @@ class _LazyProducts:
     """A products mapping that runs the SIA discovery query only on first use.
 
     Consumers check their on-disk caches before touching ``products``, so a
-    fully cached run makes zero network calls; a live run triggers exactly
-    one memoized discovery on the first cache miss.
+    fully cached run makes zero network calls; a live run runs the discovery
+    query once on the first cache miss and reuses the result afterwards.
     """
 
     def __init__(self, discover):
@@ -244,7 +244,8 @@ class _LazyProducts:
         self._lock = threading.Lock()
 
     def _ensure(self) -> dict:
-        # Double-checked locking: one SIA query across worker threads.
+        # Run the SIA discovery query only once even if several worker
+        # threads reach this together.
         if self._products is None:
             with self._lock:
                 if self._products is None:
@@ -332,7 +333,7 @@ class ForcedPhotometryResult:
     def to_table(self, **kwargs):
         """Assemble the per-object science catalog (astropy Table).
 
-        Thin wrapper around :func:`euclid_phot.catalog_table.build_catalog`;
+        Builds the catalog via :func:`euclid_phot.catalog_table.build_catalog`;
         see that function for the column list and units.
         """
         from .catalog_table import build_catalog
@@ -348,7 +349,7 @@ def run_forced_photometry(
     target_bands: dict | None = None,
     user_coords=None,
     data_dir: str | Path = DEFAULT_DATA_DIR,
-    show_download_path: bool = False,
+    force_download: bool = False,
     verbose: bool = True,
     n_workers: int = 1,
     persource_psf: bool = True,
@@ -384,8 +385,7 @@ def run_forced_photometry(
           ``"exp"``, or ``"dev"``), seeded from the catalog shape where
           available and refined in step 2.
 
-        ``objects="free"`` is the pre-v0.5.1 shorthand for
-        ``model_selection="tree"`` and remains accepted.
+        ``objects="free"`` is shorthand for ``model_selection="tree"``.
 
         Other keys: ``band`` (one of VIS / Y / J / H), ``free_shapes``
         (bool; forced off on the tree path), ``refine_positions``
@@ -416,15 +416,15 @@ def run_forced_photometry(
         band is automatically removed from ``euclid`` if present.
     data_dir : Path
         Local cache directory for cutouts / PSF stamps / unWISE tiles.
-    show_download_path : bool
+    force_download : bool
         Ignore the cache and re-fetch live from IRSA + S3 + unwise.me.
     verbose : bool
         Print step-by-step progress.
     n_workers : int
         Worker threads for cutout fetching, per-blob tree fits, per-source
         PSF groups, and NISP per-band fits. The fit-step speedup depends on
-        whether Tractor's compiled ``_mp_fourier`` FFT releases the GIL
-        (build-dependent).
+        your Tractor build, since its compiled FFT may or may not run on
+        several threads at once.
     with_flag : bool
         Also fetch the MER FLG (quality) plane for the prior band and zero
         the inverse variance on coadd-fatal pixels (``MER_VIS_BAD_BITS``)
@@ -520,11 +520,11 @@ def run_forced_photometry(
                   f"({len(mer_catalog)} rows; no query, no cache)")
         result.mer_cat = mer_catalog
     else:
-        # A live query writes the same cache file the bundled snapshot ships.
+        # Cache the MER catalog so a re-run skips the IRSA TAP query.
         mer_cache = data_dir / (
             f"mer_catalog_{target_ra:.4f}_{target_dec:.4f}"
             f"_{int(round(cutout_size_arcsec))}.fits")
-        if mer_cache.exists() and not show_download_path:
+        if mer_cache.exists() and not force_download:
             from astropy.table import Table
             if verbose:
                 print(f"[1/7] MER catalog from cache ({mer_cache.name})")
@@ -570,7 +570,7 @@ def run_forced_photometry(
         return band, fetch_cutout(
             band, target_ra, target_dec, cutout_size_arcsec,
             products=products, data_dir=cutout_dir,
-            show_download_path=show_download_path,
+            force_download=force_download,
             # mask_bright_stars needs the FLG plane (STARSIGNAL bit) on the
             # prior band and on every NISP target band it vetoes too.
             with_flag=(with_flag and band == prior_band)
@@ -617,7 +617,7 @@ def run_forced_photometry(
 
     def _extract_psf(band):
         kw = dict(products=products, radius_arcsec=psf_radius,
-                  data_dir=psf_dir, show_download_path=show_download_path)
+                  data_dir=psf_dir, force_download=force_download)
         try:
             pd = _extractors[chosen_product](band, target_ra, target_dec, **kw)
         except Exception as exc:           # product missing / fetch failed
@@ -882,7 +882,7 @@ def run_forced_photometry(
         wise_size = max(180.0, float(cutout_size_arcsec) + 120.0)
         wise_cutouts = fetch_unwise_cutouts(
             target_ra, target_dec, wise_size, data_dir=wise_dir,
-            show_download_path=show_download_path)
+            force_download=force_download)
         wise_psfs = {
             "W1": get_wise_psf(1, wise_cutouts["coadd_id"]),
             "W2": get_wise_psf(2, wise_cutouts["coadd_id"]),

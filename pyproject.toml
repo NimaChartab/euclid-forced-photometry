@@ -45,30 +45,13 @@ euclid-phot = "euclid_phot.cli:main"
 [project.optional-dependencies]
 dev = [
     "jupyter>=1.0",
-    "nbconvert>=7.16",
-    "nbclient>=0.10",
-    "ruff>=0.5",
 ]
 
 [project.urls]
-Homepage = "https://github.com/nchartab/euclid-forced-photometry"
-Documentation = "https://github.com/nchartab/euclid-forced-photometry#readme"
-Issues = "https://github.com/nchartab/euclid-forced-photometry/issues"
+Homepage = "https://github.com/NimaChartab/euclid-forced-photometry"
+Documentation = "https://github.com/NimaChartab/euclid-forced-photometry#readme"
+Issues = "https://github.com/NimaChartab/euclid-forced-photometry/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-euclid_phot = ["py.typed"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B"]
-ignore = ["E501", "E701", "E702"]
-
-[tool.ruff.lint.per-file-ignores]
-"src/euclid_phot/__init__.py" = ["F401"]
 

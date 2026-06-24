@@ -1,9 +1,5 @@
-# Bundled tutorial data (downloaded by `python -m euclid_phot.examples_data`)
-examples/data/
-examples/tutorial-data-*.tar.gz
-
 # Working caches the engine may write at runtime
-data/
+/data/
 **/_cache/
 
 # Python

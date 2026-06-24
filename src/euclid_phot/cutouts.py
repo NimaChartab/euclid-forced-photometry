@@ -1,10 +1,11 @@
 """Cutout discovery and fetch for Euclid Q1 MER mosaics.
 
 Two cache layers: a small cutout-FITS cache at
-``data_dir/<band>_<ra>_<dec>_<size>.fits`` (read directly when present), and
-a fallback to S3 lazy partial reads (``fits.open(..., use_fsspec=True)`` plus
-``hdu.section``) whose result is written back to the cutout cache. Full
-mosaic tiles are never persisted.
+``data_dir/<band>_<ptype>_<ra>_<dec>_<size>.fits`` (ptype is science, rms,
+or flag; flag planes are gzipped as ``.fits.gz``), read directly when
+present; and a fallback to S3 lazy partial reads
+(``fits.open(..., use_fsspec=True)`` plus ``hdu.section``) whose result is
+written back to the cutout cache. Full mosaic tiles are never persisted.
 
 Public: ``Cutout``, ``discover_mer_mosaics``, ``fetch_cutout``,
 ``trim_catalog_to_cutout``.
@@ -159,7 +160,7 @@ def discover_mer_mosaics(ra: float, dec: float, half_size_deg: float,
 
 
 # ---------------------------------------------------------------------------
-# Cutout fetch: S3 lazy + bundled FITS cache
+# Cutout fetch: local FITS cache, else lazy partial read from S3
 # ---------------------------------------------------------------------------
 
 def _open_mosaic(s3_path: str, mosaic_cache_dir: Path | None):
@@ -307,7 +308,8 @@ def _write_cutout_fits(path: Path, data: np.ndarray, wcs: WCS, header: fits.Head
                 "BUNIT", "EXPTIME", "TIMESYS", "DATE-OBS"):
         if key in header:
             hdr[key] = header[key]
-    # Atomic write.
+    # Write to a temp file first, then rename, so an interrupted run never
+    # leaves a half-written cutout.
     tmp = path.with_suffix(path.suffix + ".tmp")
     fits.PrimaryHDU(data=data.astype(np.float32), header=hdr).writeto(
         tmp, overwrite=True)
@@ -343,10 +345,11 @@ def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
                  products: dict | None = None,
                  data_dir: str | Path = DEFAULT_CUTOUT_DIR,
                  mosaic_cache_dir: str | Path | None = None,
-                 show_download_path: bool = False,
+                 force_download: bool = False,
                  with_rms: bool = True,
                  with_flag: bool = False) -> Cutout:
-    """Fetch a single-band cutout, using the bundled FITS cache when possible.
+    """Fetch a single-band cutout, reading the local FITS cache when present
+    and otherwise downloading from S3 (and caching the result).
 
     Parameters
     ----------
@@ -359,10 +362,13 @@ def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
         Where to look for / write the small post-cutout FITS cache.
     mosaic_cache_dir : Path or None
         If set, also consult this directory for full-mosaic files (read-only).
-    show_download_path : bool
-        If True, ignore the bundled cutout cache and re-fetch live from S3.
+    force_download : bool
+        If True, ignore the local cache and re-fetch from S3.
     with_rms : bool
         Whether to also fetch the matching RMS map.
+    with_flag : bool
+        Whether to also fetch the MER FLG quality plane; if the band has no
+        FLG tile a warning is issued and the returned Cutout has flag=None.
 
     Returns
     -------
@@ -377,7 +383,7 @@ def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
     have_rms = rms_cache.exists() if with_rms else True
     have_flag = flag_cache.exists() if with_flag else True
 
-    if have_sci and have_rms and have_flag and not show_download_path:
+    if have_sci and have_rms and have_flag and not force_download:
         data, wcs, header = _read_cutout_fits(sci_cache)
         rms = None
         if with_rms:

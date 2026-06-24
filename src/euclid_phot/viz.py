@@ -46,7 +46,7 @@ def plot_workflow(ax=None, *, save_path=None):
     box(0.25, 3.95, 2.4, 1.25, "MER catalog",
         "positions, Sersic shapes\n(IRSA TAP)", c_in)
     box(0.25, 2.30, 2.4, 1.25, "Image cutouts",
-        "VIS + Y/J/H science + RMS\n(S3 byte-range)", c_in)
+        "VIS + Y/J/H science + RMS\n(IRSA/S3)", c_in)
     box(0.25, 0.65, 2.4, 1.25, "PSF stamps",
         "CATALOG-PSF at sources;\nGRID-PSF on a 12\" grid", c_in)
 
@@ -232,8 +232,8 @@ def show_psf_stamps(psf_data: dict, *, pixel_scale_arcsec: dict | None = None,
     field-average stamp on a logarithmic stretch (normalized to the peak,
     floored at ``log_floor``) with the median FWHM and the number of stamps
     annotated. Pass ``pixel_scale_arcsec`` (band -> arcsec/pixel) to label
-    the axes in arcsec; the Euclid stamps are 21x21 pixels, so the angular
-    extent differs between VIS (0.1 arcsec/pix) and NISP (0.3 arcsec/pix).
+    the axes in arcsec; the Euclid Q1 MER mosaics, and the PSF stamps drawn
+    from them, share a common 0.1 arcsec/pix grid across VIS and NISP.
 
     Returns the array of axes.
     """

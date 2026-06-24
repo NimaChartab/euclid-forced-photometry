@@ -19,7 +19,7 @@ for analyzing Euclid and ancillary survey data.
    unmodified pipeline (flux bias below a few percent, pull standard
    deviation near unity).
 
-Runtime on the bundled data, Apple M3 Pro with eight worker threads:
+Runtime on the demo field, Apple M3 Pro with ten worker threads:
 ~25 minutes for notebook 01, ~1 minute for 02, a few minutes for 03.
 The model-selection tree dominates notebook 01; with the MER prior
 instead it finishes in a few minutes.
@@ -30,13 +30,13 @@ Two dependencies are not on PyPI and are installed from GitHub in
 steps 2-3 below.
 
 ```bash
-git clone https://github.com/nchartab/euclid-forced-photometry
+git clone https://github.com/NimaChartab/euclid-forced-photometry
 cd euclid-forced-photometry
 
 # 1. The package and its PyPI dependencies.
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]              # [dev] adds jupyter, nbconvert, nbclient, ruff
+pip install -e .[dev]              # [dev] adds jupyter
 
 # 2. Tractor (dstndstn/tractor). --no-build-isolation is needed because
 #    tractor's setup.py imports numpy at build time; this also builds the
@@ -52,8 +52,7 @@ mkdir -p .anet
 git clone --depth 1 https://github.com/dstndstn/astrometry.net.git .anet/astrometry
 python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'astrometry_net.pth').write_text(str(pathlib.Path('.anet').resolve()))"
 
-# 4. Demo data.
-python -m euclid_phot.examples_data   # downloads ~149 MB of demo cutouts
+# 4. Launch the notebooks.
 jupyter lab notebooks/
 ```
 
@@ -87,13 +86,15 @@ unlike an exported `PYTHONPATH`. To run without `unwise_psf`, set
 `TARGET_BANDS["wise"] = ()` in notebook 01, or pass
 `target_bands={"wise": ()}` to the driver.
 
-The bundled data fetch is a ~149 MB download (~166 MB extracted;
-50 arcsec and 200 arcsec cutouts of the same demo field).
+The demo cutouts for notebook 01 (a 200 arcsec field) ship with the
+repository under `examples/data/`. The other notebooks' fields, and any
+coordinates you choose, download from IRSA/S3 on first run and cache
+there.
 
 ## Library
 
 The notebooks import a single package, `euclid_phot`, that exposes both
-individual pipeline steps and a one-line wrapper:
+individual pipeline steps and a one-call driver:
 
 ```python
 import euclid_phot as ep
@@ -127,7 +128,7 @@ flux_Y_ujy, flux_Y_err_ujy = nisp["Y"]["flux_ujy"], nisp["Y"]["flux_err_ujy"]
 
 # 6. Propagate to unWISE W1/W2. fit_wise_forced keeps the VIS models frozen
 #    (flux-only, as for NISP), fits a per-band sky offset jointly with the
-#    source brightnesses, and reports the chi-MAD inflation factor k on
+#    source brightnesses, and reports the chi-MAD inflation factor (chi_inflation) on
 #    source-sparse pixels. source_models="point" collapses every source to
 #    a PointSource instead (Lang et al. 2016, section 3.2).
 wise_cutouts = ep.fetch_unwise_cutouts(269.48, 67.30, size_arcsec=320)
@@ -209,27 +210,25 @@ user-supplied positions). Override with `psf_product`.
 
 ## Command line
 
-The console script wraps the driver for single cutouts:
+The command-line script runs the driver for single cutouts:
 
 ```bash
 euclid-phot run --ra 269.48 --dec 67.30 --size 50 --out catalog.ecsv
-euclid-phot fetch-data
 ```
 
-## Live download mode
+## Data and caching
 
-By default the notebooks read the bundled cutouts, so there are no
-network calls after the one-time `examples_data` fetch. To re-run the
-full IRSA TAP + S3 + unwise.me download path live, set
-`SHOW_DOWNLOAD_PATH = True` in the first cell of the notebook. Expect
-three to five minutes per notebook for network transfer and unWISE
-coadd assembly. The result is byte-identical to the bundle for the demo
-target.
+The demo field for notebook 01 ships with the repository, so it runs
+with no network calls. Any missing file (the other notebooks' 50 arcsec
+field, or a field at coordinates you choose) is downloaded from IRSA TAP
++ S3 + unwise.me on first use and cached under `examples/data/`, so
+later runs are offline. The first download of a new field takes a few
+minutes for network transfer and unWISE coadd assembly.
 
 ## Multicore
 
-`n_workers` threads the cutout fetch, the per-band NISP fits, the
-per-blob tree fits, and the per-source PSF flux refit (the same kwarg
+`n_workers` parallelizes the cutout fetch, the per-band NISP fits, the
+per-blob tree fits, and the per-source PSF flux refit (the same option
 exists on `fit_nisp_forced` and `run_model_selection`). The fetch
-always benefits. The fit speedup depends on whether your Tractor
-build's compiled FFT releases the GIL, which varies between builds.
+always benefits. The fit speedup depends on your Tractor build, since
+its compiled FFT may or may not run on several threads at once.
