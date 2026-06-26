@@ -26,13 +26,37 @@ instead it finishes in a few minutes.
 
 ## Install
 
-Two dependencies are not on PyPI and are installed from GitHub in
-steps 2-3 below.
-
 ```bash
 git clone https://github.com/NimaChartab/euclid-forced-photometry
 cd euclid-forced-photometry
+./scripts/install.sh           # VIS + NISP
+./scripts/install.sh --wise    # also the optional unWISE W1/W2 leg
+jupyter lab notebooks/
+```
 
+`scripts/install.sh` is idempotent (safe to re-run) and installs into an
+active virtualenv or conda env if one is present, otherwise it creates a
+local `.venv`; pass `--python /path/to/python` to target a specific
+interpreter. Notebook 01 also invokes the script from its first cell, so a
+fresh clone runs with no manual setup.
+
+To run without the WISE leg, install without `--wise` and set
+`TARGET_BANDS["wise"] = ()` in notebook 01 (or pass `target_bands={"wise":
+()}` to the driver).
+
+The demo cutouts for notebook 01 (a 200 arcsec field) ship with the
+repository under `examples/data/`. The other notebooks' fields, and any
+coordinates you choose, download from IRSA/S3 on first run and cache
+there.
+
+<details>
+<summary>Manual install — what the script does, step by step</summary>
+
+`pip install -e .` already pulls in every PyPI dependency. The three GitHub
+packages below are the only reason there is more than one step: none of them
+is a plain `pip install`.
+
+```bash
 # 1. The package and its PyPI dependencies.
 python -m venv .venv
 source .venv/bin/activate
@@ -51,27 +75,19 @@ pip install --no-build-isolation "git+https://github.com/dstndstn/tractor.git"
 mkdir -p .anet
 git clone --depth 1 https://github.com/dstndstn/astrometry.net.git .anet/astrometry
 python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'astrometry_net.pth').write_text(str(pathlib.Path('.anet').resolve()))"
-
-# 4. Launch the notebooks.
-jupyter lab notebooks/
 ```
 
-Conda users: create an environment first, then run steps 1-4 inside it.
-The conda environment replaces the `venv`, so skip the two `python -m venv
-.venv` / `source .venv/bin/activate` lines in step 1 and start at `pip
-install -e .[dev]`.
+Conda users: create an environment first, then run the steps inside it,
+skipping the two `venv` lines (the conda env replaces the `venv`):
 
 ```bash
 conda create -n euclid python=3.11
 conda activate euclid
 pip install -e .[dev]              # step 1, without the venv lines
-# ... steps 2-4 from the block above ...
+# ... steps 2-3 above ...
 ```
 
-### WISE photometry (optional)
-
-The VIS + NISP workflow needs nothing beyond the commands above. The
-unWISE W1/W2 section additionally needs the `unwise_psf` PSF model,
+The optional unWISE W1/W2 leg additionally needs the `unwise_psf` PSF model,
 which is not pip-installable, plus `fitsio` (its FITS reader) and
 `setuptools<81` (it imports the deprecated `pkg_resources` API):
 
@@ -81,15 +97,10 @@ python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'unwise
 pip install fitsio "setuptools<81"
 ```
 
-The `.pth` file makes the package visible to Jupyter kernels as well,
-unlike an exported `PYTHONPATH`. To run without `unwise_psf`, set
-`TARGET_BANDS["wise"] = ()` in notebook 01, or pass
-`target_bands={"wise": ()}` to the driver.
+The `.pth` files make these packages visible to Jupyter kernels as well,
+unlike an exported `PYTHONPATH`.
 
-The demo cutouts for notebook 01 (a 200 arcsec field) ship with the
-repository under `examples/data/`. The other notebooks' fields, and any
-coordinates you choose, download from IRSA/S3 on first run and cache
-there.
+</details>
 
 ## Library
 
