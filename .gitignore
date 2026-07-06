@@ -23,9 +23,6 @@ venv/
 .vscode/
 .idea/
 
-# Local Claude Code settings
-.claude/settings.local.json
-
 # Catalog written by notebook 01 section 16
 *.ecsv
 

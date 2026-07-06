@@ -25,10 +25,10 @@ def plot_workflow(ax=None, *, save_path=None):
             (x, y), w, h, boxstyle="round,pad=0.05,rounding_size=0.14",
             linewidth=1.1, edgecolor="0.25", facecolor=fc))
         ax.text(x + w / 2, y + h - 0.26, title, ha="center", va="center",
-                fontsize=9.5, fontweight="bold")
+                fontsize=11, fontweight="bold")
         if body:
             ax.text(x + w / 2, y + (h - 0.42) / 2, body, ha="center",
-                    va="center", fontsize=8.2, linespacing=1.45)
+                    va="center", fontsize=9.6, linespacing=1.45)
 
     def arrow(x0, y0, x1, y1):
         ax.add_patch(FancyArrowPatch(
@@ -36,7 +36,7 @@ def plot_workflow(ax=None, *, save_path=None):
             linewidth=1.2, color="0.3", shrinkA=2, shrinkB=2))
 
     def header(xc, text):
-        ax.text(xc, 5.85, text, ha="center", va="center", fontsize=10,
+        ax.text(xc, 5.85, text, ha="center", va="center", fontsize=11.5,
                 color="0.35", fontweight="bold")
 
     c_in, c_mod, c_fit = "#dce7f3", "#e6e0f0", "#eef0f2"
@@ -258,7 +258,7 @@ def show_psf_stamps(psf_data: dict, *, pixel_scale_arcsec: dict | None = None,
                   extent=extent)
         nstamp = len(psf_data[band].get("stamps", []))
         ax.set_title(f"{band}: FWHM = {fwhm:.2f}\"  (n={nstamp})",
-                     fontsize=10)
+                     fontsize=13)
         if extent is not None:
             ax.set_xlabel("arcsec")
             if ax is axes[0]:
@@ -275,8 +275,9 @@ def show_psf_grid(grid: dict, *, cutout=None, mer_cat=None,
     The left panel maps every stamp position, colored by FWHM, with the
     cutout footprint and (optionally) the MER sources overlaid; it shows
     whether the product covers the field and how much the PSF varies
-    across it. The remaining panels show the stamps at the minimum,
-    median, and maximum FWHM on a logarithmic stretch. Applied to a
+    across it. The remaining panels show the stamps at the 5th
+    percentile, median, and 95th percentile FWHM on a logarithmic
+    stretch. Applied to a
     GRID-PSF extraction the map traces the regular grid; applied to a
     CATALOG-PSF extraction it traces the source distribution.
 
@@ -308,10 +309,10 @@ def show_psf_grid(grid: dict, *, cutout=None, mer_cat=None,
         picks = []
     labels = ["5th pct FWHM", "median FWHM", "95th pct FWHM"][:len(picks)]
 
-    fig = plt.figure(figsize=(4.8 + 2.5 * len(picks), 4.2))
+    fig = plt.figure(figsize=(5.4 + 2.5 * len(picks), 4.2))
     gs = fig.add_gridspec(1, 1 + len(picks),
                           width_ratios=[2.0] + [1.0] * len(picks),
-                          wspace=0.3)
+                          wspace=0.35)
     axm = fig.add_subplot(gs[0])
     sc = axm.scatter(ra, dec, c=fwhm, s=26, cmap="viridis", zorder=2,
                      alpha=0.85, label="PSF stamps")
@@ -329,16 +330,16 @@ def show_psf_grid(grid: dict, *, cutout=None, mer_cat=None,
     axm.invert_xaxis()
     axm.set_xlabel("RA (deg)")
     axm.set_ylabel("Dec (deg)")
-    axm.legend(fontsize=8, loc="upper right")
-    fig.colorbar(sc, ax=axm, fraction=0.046, pad=0.04,
-                 label="FWHM (arcsec)")
+    axm.legend(fontsize=11, loc="upper right")
+    cb = fig.colorbar(sc, ax=axm, fraction=0.046, pad=0.04)
+    cb.ax.set_title("FWHM\n(arcsec)", fontsize=12)
 
     for k, (i, lab) in enumerate(zip(picks, labels, strict=True)):
         ax = fig.add_subplot(gs[1 + k])
         norm = stamps[i] / stamps[i].max()
         ax.imshow(np.log10(np.maximum(norm, log_floor)), origin="lower",
                   cmap="magma", vmin=np.log10(log_floor), vmax=0)
-        ax.set_title(f"{lab}\n{fwhm[i]:.3f}\"", fontsize=9)
+        ax.set_title(f"{lab}\n{fwhm[i]:.3f}\"", fontsize=12)
         ax.set_xticks([]); ax.set_yticks([])
 
     info = {"n_stamps": int(len(ra)),
@@ -376,7 +377,7 @@ def show_sed(fluxes_ujy: dict, errors_ujy: dict | None = None,
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3)
     if label is not None:
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=12)
     return ax
 
 
@@ -414,7 +415,7 @@ def show_error_calibration(calib: dict, *, ax=None):
     ax.set_xlabel("flux / formal error at source-free positions")
     ax.set_ylabel("density")
     ax.set_title(f"{band}: error inflation x{calib.get('inflation', np.nan):.2f}"
-                 f" ({calib.get('method', '')})", fontsize=10)
-    ax.legend(fontsize=8)
+                 f" ({calib.get('method', '')})", fontsize=13)
+    ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     return ax

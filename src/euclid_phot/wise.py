@@ -6,13 +6,11 @@ Data flow:
    extract per-band img/invvar FITS.
 2. ``get_wise_psf``: construct the spatially-correct unWISE PSF via the
    ``unwise_psf`` library.
-3. ``fit_wise_forced``: forced photometry at the Euclid source
-                                     positions on a smaller "fit" cutout that
-                                     contains the sources plus a PSF-wing
-                                     buffer, with a jointly-fit constant sky,
-                                     an empirical chi-based error inflation,
-                                     and outside-prior unWISE-catalog point
-                                     sources in the buffer ring.
+3. ``fit_wise_forced``: forced photometry at the Euclid source positions
+   on a smaller "fit" cutout that contains the sources plus a PSF-wing
+   buffer, with a jointly-fit constant sky, an empirical chi-based error
+   inflation, and outside-prior unWISE-catalog point sources in the
+   buffer ring.
 
 Method notes. Lang, Hogg & Schlegel (2016) is the canonical reference for
 WISE forced photometry from a higher-resolution prior. Differences here:
@@ -365,7 +363,11 @@ def fetch_unwise_cutouts(ra: float, dec: float, size_arcsec: float,
     data_dir.mkdir(parents=True, exist_ok=True)
     size_pix = int(round(size_arcsec / UNWISE_PIXEL_SCALE))
 
-    tarball = data_dir / f"unwise_{ra:.4f}_{dec:.4f}_{int(round(size_arcsec))}.tar.gz"
+    tarball = data_dir / f"unwise_{version}_{ra:.4f}_{dec:.4f}_{int(round(size_arcsec))}.tar.gz"
+    legacy = data_dir / f"unwise_{ra:.4f}_{dec:.4f}_{int(round(size_arcsec))}.tar.gz"
+    if (not tarball.exists() and legacy.exists()
+            and version == WISE_COADD_VERSION and not force_download):
+        tarball = legacy
     if not tarball.exists() or force_download:
         url = _unwise_cutout_url(ra, dec, size_pix, version)
         # unwise.me can return an HTML 200 on out-of-coverage targets;

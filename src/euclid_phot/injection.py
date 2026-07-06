@@ -164,7 +164,9 @@ def inject_sources(cutout, psf, truth, *,
         for i, src in enumerate(sources):
             p = src.getPosition()
             cosd = np.cos(np.radians(float(p.dec)))
-            d = (((psf["ra"] - float(p.ra)) * cosd) ** 2
+            # Wrap the RA difference into [-180, 180].
+            d_ra = ((np.asarray(psf["ra"]) - float(p.ra) + 540.0) % 360.0) - 180.0
+            d = ((d_ra * cosd) ** 2
                  + (psf["dec"] - float(p.dec)) ** 2)
             nearest[i] = int(np.argmin(d))
         for pi in np.unique(nearest):

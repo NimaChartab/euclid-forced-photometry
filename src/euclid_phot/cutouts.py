@@ -423,7 +423,7 @@ def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
             flag_tiles = (products[band]["flag"].get("tiles")
                           or [products[band]["flag"]])
             if len(flag_tiles) == 1:
-                # Cutout2D copies the pixel grid exactly; bits preserved.
+                # Single tile: plain pixel copy, no resampling.
                 fdata, _, _ = _single_tile_cutout(
                     flag_tiles[0], ra, dec, size_arcsec, mosaic_cache_dir)
                 flag = np.rint(fdata).astype(np.int32)
