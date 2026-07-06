@@ -1,6 +1,6 @@
 """euclid_phot: forced photometry on Euclid Q1 with Tractor.
 
-The package exposes both the individual pipeline steps (used by the teaching
+The package exposes both the individual pipeline steps (used by the
 notebooks) and a one-call driver (used by everything else). See the module
 docstrings for the inputs and outputs of each step.
 
@@ -23,8 +23,8 @@ Beyond the single-cutout pipeline: ``run_injection_recovery``
 (injection.py) validates the photometry and errors on synthetic sources;
 the ``euclid-phot`` command-line script (cli.py) runs the driver.
 
-The package imports Tractor and matplotlib only when first used, so it
-loads quickly even before they are installed. The notebooks download their
+The package imports Tractor and matplotlib only when first used, so
+importing euclid_phot does not require them. The notebooks download their
 demo cutouts from IRSA/S3 on first run and cache them locally under
 ``examples/data/``.
 """

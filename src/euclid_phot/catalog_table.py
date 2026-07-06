@@ -180,18 +180,21 @@ def build_catalog(result, *, origin: str | None = None,
 
     if with_flags and n > 0:
         from .flags import blend_flags, flag_sources
-        # First band present in canonical order is the prior band.
-        if bands:
+        # Flag on the band that defined the source list; fall back to the
+        # first band in canonical order if the prior band is not recorded.
+        flag_band = (result.prior or {}).get("band")
+        if flag_band not in bands:
+            flag_band = bands[0] if bands else None
+        if flag_band:
             bf = blend_flags(
-                ra, dec, np.asarray(result.fluxes_ujy[bands[0]], float),
+                ra, dec, np.asarray(result.fluxes_ujy[flag_band], float),
                 profile_re_arcsec=_model_re_arcsec(
                     getattr(result, "sources", None)))
             for c in bf.colnames:
                 tab[c] = bf[c]
-        if bands:
-            prior_cut = (result.cutouts or {}).get(bands[0])
+            prior_cut = (result.cutouts or {}).get(flag_band)
             fs = flag_sources(
-                ra, dec, np.asarray(result.fluxes_ujy[bands[0]], float),
+                ra, dec, np.asarray(result.fluxes_ujy[flag_band], float),
                 is_star,
                 wcs=getattr(prior_cut, "wcs", None),
                 flag_plane=getattr(prior_cut, "flag", None),

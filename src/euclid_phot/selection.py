@@ -78,11 +78,13 @@ EUCLID_DEFAULTS = dict(
     # even though the fits themselves are better.
     per_source_psf=False,
     # Guarded SersicGalaxy 6th tier (extension beyond published Farmer);
-    # on by default: accepted only when it beats the locked tier's
-    # chi-squared by sersic_chi2_margin on the same wing-wide window.
+    # on by default: accepted only when it lowers the total chi-squared on
+    # the wing-wide window, both models scored there, by more than
+    # sersic_dchi2_accept (a likelihood-ratio test for the one extra shape
+    # parameter; 25 is a ~5 sigma preference).
     include_sersic_tier=True,
     sersic_min_snr=20.0,
-    sersic_chi2_margin=0.1,
+    sersic_dchi2_accept=25.0,
     sersic_init_n=2.5,
 )
 
@@ -121,12 +123,10 @@ class SimpleGalaxy(ExpGalaxy):
 
 
 def set_simplegalaxy_radius(radius_arcsec: float) -> None:
-    """Reset the SimpleGalaxy class-level *default* shape radius (arcsec).
+    """Set the class-default SimpleGalaxy shape radius (arcsec).
 
-    Legacy hook. The fit path now passes the selector's ``simplegalaxy_radius``
-    explicitly to each ``SimpleGalaxy`` instance, so this only affects instances
-    built with no explicit ``radius_arcsec`` (it no longer carries per-selector
-    configuration through global state).
+    Only affects instances built with no explicit ``radius_arcsec``; the
+    fit path passes the selector's ``simplegalaxy_radius`` explicitly.
     """
     SimpleGalaxy.DEFAULT_RADIUS = float(radius_arcsec)
 
@@ -266,21 +266,6 @@ def _blob_bbox(footprint: np.ndarray, shape, margin: int = 20):
     return y0, y1, x0, x1
 
 
-def _reduced_chi2(tractor: Tractor, segment: np.ndarray, n_free: int) -> float:
-    """Reduced chi^2 in ``segment`` pixels, dof = npix - n_free.
-
-    Matches Farmer's per-source decision-tree statistic: each source's own
-    segment with that source's own thawed-parameter count, so dof is exact
-    for an isolated member and a mild over-estimate where members overlap
-    (Farmer's approximation too). dof is floored at 1.
-    """
-    chi = tractor.getChiImage(imgi=0)
-    seg_chi = chi[segment]
-    npix = int(seg_chi.size)
-    dof = max(npix - int(n_free), 1)
-    return float(np.sum(seg_chi**2) / dof)
-
-
 def _count_free_params(source) -> int:
     """Number of currently-thawed Tractor parameters on a source.
 
@@ -371,7 +356,7 @@ class ModelSelector:
         per_source_psf: bool = EUCLID_DEFAULTS["per_source_psf"],
         include_sersic_tier: bool = EUCLID_DEFAULTS["include_sersic_tier"],
         sersic_min_snr: float = EUCLID_DEFAULTS["sersic_min_snr"],
-        sersic_chi2_margin: float = EUCLID_DEFAULTS["sersic_chi2_margin"],
+        sersic_dchi2_accept: float = EUCLID_DEFAULTS["sersic_dchi2_accept"],
     ):
         self.sufficient_thresh = float(sufficient_thresh)
         self.simplegalaxy_penalty = float(simplegalaxy_penalty)
@@ -387,7 +372,7 @@ class ModelSelector:
         # resolved sources whose accepted model leaves a core residual.
         self.include_sersic_tier = bool(include_sersic_tier)
         self.sersic_min_snr = float(sersic_min_snr)
-        self.sersic_chi2_margin = float(sersic_chi2_margin)
+        self.sersic_dchi2_accept = float(sersic_dchi2_accept)
 
         # Sync the shared SimpleGalaxy radius with this selector's value.
         set_simplegalaxy_radius(self.simplegalaxy_radius)
@@ -718,8 +703,8 @@ class ModelSelector:
                     # so wing damage outside the segment counts.
                     if idx in defer:
                         chis = {
-                            1: chi2w_tracker.get(2, {}).get(idx, np.inf),
-                            2: chi2w_tracker.get(1, {}).get(idx, np.inf),
+                            1: chi2w_tracker.get(2, {}).get(idx, np.inf),  # PointSource
+                            2: chi2w_tracker.get(1, {}).get(idx, np.inf),  # SimpleGalaxy
                             3: chi2w_tracker.get(3, {}).get(idx, np.inf),
                             4: chi2w_tracker.get(4, {}).get(idx, np.inf),
                             5: chi2w_tracker.get(5, {}).get(idx, np.inf),
@@ -737,8 +722,8 @@ class ModelSelector:
                         accepted_stage = 2
                     elif best_stage == 2:
                         locked_source[idx] = _build_initial_source(
-                    row, SimpleGalaxy, None, pixscale_arcsec,
-                    simplegalaxy_radius=self.simplegalaxy_radius)
+                            row, SimpleGalaxy, None, pixscale_arcsec,
+                            simplegalaxy_radius=self.simplegalaxy_radius)
                         accepted_stage = 1
                     elif best_stage == 3:
                         locked_source[idx] = exp_snapshot[idx]
@@ -767,7 +752,7 @@ class ModelSelector:
 
         # --- Optional Stage 6: guarded SersicGalaxy refit -------------------
         # Free-n Sersic for Exp/Dev/Composite sources bright enough to
-        # constrain n; kept only if chi^2_red drops by the margin.
+        # constrain n; kept only if the total chi^2 drops significantly.
         if self.include_sersic_tier:
             self._try_sersic_tier(tim_blob, blob, idx_list, locked_source,
                                   all_sources_final, mer_cat, pixscale_arcsec,
@@ -834,7 +819,8 @@ class ModelSelector:
                          all_sources_final, mer_cat, pixscale_arcsec,
                          hist, segments=None):
         """For each Exp/Dev/Composite source bright enough to constrain Sérsic
-        index, try a free-n SersicGalaxy and keep it only if chi^2 improves.
+        index, try a free-n SersicGalaxy and keep it only if the total chi^2
+        on the wing-wide window improves by more than ``sersic_dchi2_accept``.
         Updates ``locked_source``, ``all_sources_final`` (in place), and ``hist``.
         """
         eligible_classes = (ExpGalaxy, DevGalaxy, FixedCompositeGalaxy)
@@ -877,14 +863,17 @@ class ModelSelector:
             tractor_cur = Tractor([tim_blob], all_sources_final, optimizer=ConstrainedOptimizer())
             for s in all_sources_final:
                 s.freezeAllParams()
-            prev_chi2 = _reduced_chi2(tractor_cur, eval_seg, n_free_prev)
+            chi_prev = tractor_cur.getChiImage(imgi=0)
+            npix_eval = int(eval_seg.sum())
+            prev_tot = float(np.sum(chi_prev[eval_seg] ** 2))
+            prev_chi2 = prev_tot / max(npix_eval - n_free_prev, 1)
 
             # Two starts, n=1 and n=4: the Sersic likelihood is bimodal for
             # a disk+core galaxy (an n=4 seed chases the core to n=6.1 on
             # the demo field). Each start gets a fresh seed shape since the
             # first fit mutates it.
             saved = all_sources_final[pos_in_list]
-            best = None   # (chi2, fitted source, n)
+            best = None   # (total chi2, reduced chi2, segment chi2, source, n)
 
             def _fresh_seed(idx=idx):
                 sep_row = blob.sep_rows.get(idx)
@@ -911,22 +900,29 @@ class ModelSelector:
                         else:
                             s.freezeAllParams()
                     self._optimize(tractor_try)
-                    cand_chi2 = _reduced_chi2(tractor_try, eval_seg,
-                                              _count_free_params(new_src))
+                    chi_try = tractor_try.getChiImage(imgi=0)
+                    n_free_new = _count_free_params(new_src)
+                    cand_tot = float(np.sum(chi_try[eval_seg] ** 2))
+                    cand_chi2 = cand_tot / max(npix_eval - n_free_new, 1)
+                    # Segment-window chi^2 for the figure, so the stage-6
+                    # row is comparable with the earlier tiers.
+                    cand_seg = (float(np.sum(chi_try[seg] ** 2))
+                                / max(int(seg.sum()) - n_free_new, 1))
                 except Exception as exc:
                     logger.debug("Sersic refit (n_init=%s) raised %s for "
                                  "src#%s.", n_init, exc, idx)
                     continue
-                if best is None or cand_chi2 < best[0]:
-                    best = (cand_chi2, new_src, float(new_src.sersicindex.val))
+                if best is None or cand_tot < best[0]:
+                    best = (cand_tot, cand_chi2, cand_seg, new_src,
+                            float(new_src.sersicindex.val))
 
             if best is None:
                 all_sources_final[pos_in_list] = saved
                 continue
-            new_chi2, new_src, n_fit = best
+            new_tot, new_chi2, new_seg_chi2, new_src, n_fit = best
             all_sources_final[pos_in_list] = new_src
 
-            improved = new_chi2 < prev_chi2 - self.sersic_chi2_margin
+            improved = (prev_tot - new_tot) > self.sersic_dchi2_accept
 
             if hist is not None:
                 # Render the best candidate, not whichever start ran last.
@@ -936,7 +932,7 @@ class ModelSelector:
                     stage=6,
                     model_name=f"SersicGalaxy(n={n_fit:.2f})",
                     source_idx=idx,
-                    chi2_red=new_chi2,
+                    chi2_red=new_seg_chi2,
                     chi2_wide=new_chi2,
                     flux_ujy=float(new_src.brightness.getFlux("VIS")) * 3.631,
                     model_image=tractor_best.getModelImage(0).copy(),
@@ -954,13 +950,14 @@ class ModelSelector:
 
             if improved:
                 locked_source[idx] = new_src
-                logger.debug("Sersic accepted for src#%s: chi2 %.3f -> %.3f, n=%.2f",
-                             idx, prev_chi2, new_chi2, n_fit)
+                logger.debug("Sersic accepted for src#%s: dchi2=%.1f "
+                             "(chi2red %.3f -> %.3f), n=%.2f",
+                             idx, prev_tot - new_tot, prev_chi2, new_chi2, n_fit)
             else:
-                logger.debug("Sersic rejected for src#%s: chi2 %.3f -> %.3f "
-                             "(needs < %.3f), n=%.2f",
-                             idx, prev_chi2, new_chi2,
-                             prev_chi2 - self.sersic_chi2_margin, n_fit)
+                logger.debug("Sersic rejected for src#%s: dchi2=%.1f "
+                             "(needs > %.1f), n=%.2f",
+                             idx, prev_tot - new_tot,
+                             self.sersic_dchi2_accept, n_fit)
                 all_sources_final[pos_in_list] = saved
 
     @staticmethod
@@ -1350,7 +1347,7 @@ def reproduce_figure3(
     history: History,
     *,
     save_path: str | None = None,
-    figsize_per_panel: float = 2.4,
+    figsize_per_panel: float = 2.8,
     vlim_sigma: float = 5.0,
 ):
     """Plot the Weaver+2023 Fig. 3-style per-tier residual panels.
@@ -1420,10 +1417,10 @@ def reproduce_figure3(
 
     axes[0, 0].imshow(crop(final.data),
                        origin="lower", cmap=cmap_img, norm=norm_lin)
-    axes[0, 0].set_title(f"VIS data  (±{vlim_sigma:.0f}σ, σ={sigma:.3g})", fontsize=10)
+    axes[0, 0].set_title(f"VIS data  (±{vlim_sigma:.0f}σ, σ={sigma:.3g})", fontsize=13)
     axes[0, 1].imshow(crop(final.residual),
                        origin="lower", cmap=cmap_img, norm=norm_lin)
-    axes[0, 1].set_title(f"Final residual  (±{vlim_sigma:.0f}σ)", fontsize=10)
+    axes[0, 1].set_title(f"Final residual  (±{vlim_sigma:.0f}σ)", fontsize=13)
 
     for r, rec in enumerate(history.stages, start=1):
         mod = crop(rec.model_image)
@@ -1434,11 +1431,11 @@ def reproduce_figure3(
 
         axes[r, 0].imshow(mod_clip, origin="lower", cmap=cmap_mod, norm=norm_log)
         axes[r, 0].set_title(f"src#{rec.source_idx} = {rec.model_name}{check}\n"
-                              f"(joint blob model)", fontsize=9,
+                              f"(joint blob model)", fontsize=12,
                               color=title_color)
         axes[r, 1].imshow(res, origin="lower", cmap=cmap_img, norm=norm_lin)
         axes[r, 1].set_title(f"joint residual   χ²ν(src#{rec.source_idx}) = "
-                              f"{rec.chi2_red:.2f}", fontsize=9,
+                              f"{rec.chi2_red:.2f}", fontsize=12,
                               color=title_color)
 
     for ax in axes.ravel():
@@ -1447,7 +1444,7 @@ def reproduce_figure3(
 
     fig.suptitle(f"Farmer-style decision tree on blob #{blob.blob_id} "
                  f"({len(history.members)} source{'s' if len(history.members) != 1 else ''})",
-                 fontsize=11)
+                 fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     if save_path is not None:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")

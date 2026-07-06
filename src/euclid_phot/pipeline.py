@@ -300,7 +300,7 @@ def _drop_coords_outside_cutout(parsed: dict, wcs, shape, *, margin_pix: int = 1
     out = {}
     for k, v in parsed.items():
         if isinstance(v, str) or np.ndim(v) == 0 or len(np.atleast_1d(v)) != n:
-            out[k] = v  # scalar / single broadcast value -> keep as-is
+            out[k] = v
         else:
             out[k] = np.asarray(v)[keep]
     return out, n_dropped
@@ -433,8 +433,10 @@ def run_forced_photometry(
     mask_bright_stars : bool or dict
         ``True``: zero the inverse variance on the MER STARSIGNAL pixels
         (star footprints, halos and spikes included) before the prior-band
-        fit, and likewise veto each NISP target band on its own STARSIGNAL
-        plane. Fetches the FLG plane automatically and works for every
+        fit; the NISP mosaics share the prior band's 0.1 arcsec grid, so
+        the same pixel veto carries over to the NISP fits, whose own FLG
+        planes additionally veto coadd-fatal pixels.
+        Fetches the FLG planes automatically and works for every
         source-list mode; the covered stars are themselves not measurable
         and carry the ``bright_star`` flag. A dict of
         :func:`euclid_phot.flags.bright_star_pixel_mask` keywords selects
@@ -572,7 +574,8 @@ def run_forced_photometry(
             products=products, data_dir=cutout_dir,
             force_download=force_download,
             # mask_bright_stars needs the FLG plane (STARSIGNAL bit) on the
-            # prior band and on every NISP target band it vetoes too.
+            # prior band; the NISP FLG planes feed the coadd-fatal bad-bit
+            # veto inside build_tractor_image.
             with_flag=(with_flag and band == prior_band)
                       or (mask_bright_stars is True
                           and band in (prior_band,) + tuple(target_bands["euclid"])))
@@ -732,8 +735,7 @@ def run_forced_photometry(
             pixscale_arcsec=cutouts[prior_band].pixel_scale_arcsec,
             selector=prior.get("selector"),
             # psf_data enables per_source_psf selectors; the default keeps
-            # the field-average stamp (a median over hundreds of stamps
-            # beats any single noisier per-source stamp on the demo field).
+            # the field-average stamp.
             psf_data=result.psf_data.get(prior_band),
             n_workers=n_workers,
             **(prior.get("detect") or {}))

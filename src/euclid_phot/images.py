@@ -98,10 +98,8 @@ def build_tractor_image(cutout, psf_stamp: np.ndarray,
     mag_zero : float, optional
         AB magnitude zero point of the IMAGE. If None, read from
         ``cutout.header['MAGZERO']``; if that is missing, falls back to 23.9
-        (the MER *catalog* flux-to-mag zero point) and emits a UserWarning,
-        because 23.9 is almost certainly wrong for a Euclid mosaic and would
-        mis-scale every flux. Pass ``mag_zero`` explicitly when the header
-        lacks ``MAGZERO``.
+        (the MER *catalog* flux-to-mag zero point) and emits a UserWarning.
+        Pass ``mag_zero`` explicitly when the header lacks ``MAGZERO``.
 
     Returns
     -------
