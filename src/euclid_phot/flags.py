@@ -11,7 +11,7 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
 
-from .config import MER_VIS_BAD_BITS
+from .config import MER_VIS_BAD_BITS, MER_VIS_STARSIGNAL
 
 _USE_DEFAULT_BAD_BITS = object()
 
@@ -226,6 +226,27 @@ def probable_bright_stars(mer_cat) -> np.ndarray:
         abstained_star = (abstained & np.isfinite(fpsf) & np.isfinite(fser)
                           & (fpsf >= fser))
     return classified_star | abstained_star
+
+
+def starsignal_pixel_mask(cutout) -> np.ndarray | None:
+    """Boolean bright-star pixel mask (True = drop from the fit) read from
+    the MER FLG plane's STARSIGNAL bit.
+
+    STARSIGNAL marks the footprints of bright-star halos and diffraction
+    spikes -- real light the compact CATALOG-PSF stamps cannot model.
+    Zeroing the inverse variance on these pixels (pass the mask to
+    ``build_tractor_image(..., pixel_mask=...)``) keeps that light from
+    biasing neighboring sources; the covered stars are themselves not
+    measured.
+
+    Returns None when the cutout carries no FLG plane (fetch it with
+    ``fetch_cutout(..., with_flag=True)``); ``bright_star_pixel_mask``
+    below is the geometric fallback for that case.
+    """
+    flag_plane = getattr(cutout, "flag", None)
+    if flag_plane is None:
+        return None
+    return (np.asarray(flag_plane) & MER_VIS_STARSIGNAL) != 0
 
 
 def bright_star_pixel_mask(shape, wcs, ra, dec, fluxes_ujy, is_star, *,

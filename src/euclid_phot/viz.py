@@ -418,3 +418,109 @@ def show_error_calibration(calib: dict, *, ax=None):
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     return ax
+
+
+def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
+                     err_ujy=None, ref_err_ujy=None,
+                     sel=None, flagged=None,
+                     ax=None, gridsize: int = 45,
+                     target_per_bin: int = 80, max_bins: int = 15,
+                     min_per_bin: int = 5, ylim: float = 1.0,
+                     xlabel: str = "reference AB magnitude",
+                     ylabel: str = "m_Tractor - m_ref (mag)",
+                     title: str | None = None):
+    """Magnitude difference vs magnitude against a reference catalog.
+
+    A log-density hexbin of ``-2.5 log10(flux/ref)`` against the reference
+    AB magnitude, with the running median, the +/- NMAD band, and (when the
+    two pipelines' errors are given) the scatter expected from the reported
+    errors, all in equal-population magnitude bins. The NMAD tracking the
+    expected curve at the faint end shows the growth of the scatter is the
+    photon noise itself.
+
+    Parameters
+    ----------
+    ref_ujy, flux_ujy : ndarray
+        Reference and measured fluxes (microJansky), aligned.
+    err_ujy, ref_err_ujy : ndarray, optional
+        The two pipelines' 1-sigma flux errors; both are needed for the
+        expected-scatter curve.
+    sel : ndarray of bool, optional
+        Points entering the hexbin and the binned statistics. Defaults to
+        every position where both fluxes are finite and positive.
+    flagged : ndarray of bool, optional
+        Overplotted as open gray circles (label ``'flagged'``) and kept out
+        of the binned statistics.
+    ylim : float
+        Half-height of the panel in magnitudes.
+
+    Returns
+    -------
+    (ax, info) : info holds the binned curves -- ``centers``, ``median``,
+        ``nmad``, ``expected`` (NaN when errors were not given) -- and
+        ``n_bins``.
+    """
+    from astropy.stats import mad_std
+
+    ref = np.asarray(ref_ujy, dtype=float)
+    flux = np.asarray(flux_ujy, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mag = 23.9 - 2.5 * np.log10(np.where(ref > 0, ref, np.nan))
+        dmag = -2.5 * np.log10(np.where(flux > 0, flux, np.nan)
+                               / np.where(ref > 0, ref, np.nan))
+        pred = None
+        if err_ujy is not None and ref_err_ujy is not None:
+            pred = 1.0857 * np.sqrt(
+                (np.asarray(err_ujy, dtype=float) / flux) ** 2
+                + (np.asarray(ref_err_ujy, dtype=float) / ref) ** 2)
+
+    ok = np.isfinite(mag) & np.isfinite(dmag)
+    sel = ok if sel is None else (np.asarray(sel, dtype=bool) & ok)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6.5, 6.5))
+    if not sel.any():
+        ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
+        return ax, {"centers": np.array([]), "median": np.array([]),
+                    "nmad": np.array([]), "expected": np.array([]),
+                    "n_bins": 0}
+
+    x0 = float(np.floor(np.nanmin(mag[sel])))
+    x1 = float(np.ceil(np.nanmax(mag[sel])))
+    ax.hexbin(mag[sel], dmag[sel], gridsize=gridsize, cmap="YlGnBu",
+              bins="log", mincnt=1, extent=(x0, x1, -ylim, ylim),
+              linewidths=0.2)
+    if flagged is not None:
+        fl = np.asarray(flagged, dtype=bool) & ok
+        ax.scatter(mag[fl], dmag[fl], s=24, facecolors="none",
+                   edgecolors="0.5", label="flagged")
+
+    # Running median, NMAD, and expected scatter in equal-population bins.
+    mvals, dvals = mag[sel], dmag[sel]
+    pvals = pred[sel] if pred is not None else None
+    nbins = max(4, min(max_bins, mvals.size // target_per_bin))
+    edges = np.quantile(mvals, np.linspace(0, 1, nbins + 1))
+    ctr, med, nmad, prd = [], [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        inb = (mvals >= lo) & (mvals <= hi)
+        if inb.sum() >= min_per_bin:
+            ctr.append(float(np.median(mvals[inb])))
+            med.append(float(np.median(dvals[inb])))
+            nmad.append(float(mad_std(dvals[inb])))
+            prd.append(float(np.nanmedian(pvals[inb]))
+                       if pvals is not None else float("nan"))
+    ctr, med, nmad, prd = (np.array(ctr), np.array(med),
+                           np.array(nmad), np.array(prd))
+    ax.plot(ctr, med, "k-", lw=1.6, label="median")
+    ax.fill_between(ctr, med - nmad, med + nmad, color="k", alpha=0.15,
+                    label="+/- NMAD")
+    if pvals is not None and np.isfinite(prd).any():
+        ax.plot(ctr, prd, "r:", lw=1.5, label="expected from errors")
+        ax.plot(ctr, -prd, "r:", lw=1.5)
+    ax.axhline(0, color="r", ls="--", lw=1)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_ylim(-ylim, ylim)
+    if title is not None:
+        ax.set_title(title)
+    return ax, {"centers": ctr, "median": med, "nmad": nmad,
+                "expected": prd, "n_bins": int(len(ctr))}

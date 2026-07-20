@@ -665,9 +665,9 @@ def run_forced_photometry(
                 "pixel mask. Pass a dict of bright_star_pixel_mask keywords "
                 "to use the geometric fallback instead.", stacklevel=2)
         else:
-            from .config import MER_VIS_STARSIGNAL
+            from .flags import starsignal_pixel_mask
             from .images import _invvar_from_rms
-            star_mask = (flag_plane & MER_VIS_STARSIGNAL) != 0
+            star_mask = starsignal_pixel_mask(cutouts[prior_band])
             base_iv = _invvar_from_rms(cutouts[prior_band].rms,
                                        cutouts[prior_band].data)
             prior_invvar = np.where(star_mask, 0.0, base_iv)

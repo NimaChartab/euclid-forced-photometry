@@ -82,6 +82,12 @@ else
 fi
 
 "$PY" -c 'import sys; print("    python", sys.version.split()[0], "->", sys.executable)'
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)'; then
+    echo "euclid_phot needs Python >= 3.10, but the selected interpreter is $("$PY" -V 2>&1)." >&2
+    echo "Create a newer environment first, e.g.:  conda create -n euclid python=3.11" >&2
+    echo "then re-run, or pass --python /path/to/a/3.10+/python." >&2
+    exit 1
+fi
 
 # Write a .pth file into the env's site-packages so a source clone is importable.
 # $1 = .pth filename, $2 = directory to add to the import path.
@@ -98,6 +104,51 @@ PYEOF
 
 has_module() { "$PY" -c "import $1" >/dev/null 2>&1; }
 
+# Tractor's build runs SWIG to generate its C-extension wrappers (the
+# _mp_fourier FFT module). SWIG is a build tool, not a pip dependency of
+# Tractor, so ensure it is present before the build. The official `swig`
+# wheel on PyPI works in any environment (venv/conda/system) with no system
+# package manager, so try that first; fall back to conda/brew/apt.
+ensure_swig() {
+    if command -v swig >/dev/null 2>&1; then
+        return
+    fi
+    log "SWIG (needed to build Tractor) was not found; installing it"
+    # 1. Universal path: the `swig` wheel drops a binary in the env's bin dir.
+    if "$PY" -m pip install swig >/dev/null 2>&1; then
+        local scripts_dir
+        scripts_dir="$("$PY" -c "import sysconfig; print(sysconfig.get_path('scripts'))")"
+        export PATH="$scripts_dir:$PATH"   # so the Tractor build sees it
+    fi
+    if command -v swig >/dev/null 2>&1; then
+        echo "    installed swig via pip -> $(command -v swig)"
+        return
+    fi
+    # 2. Fallbacks if no wheel is available for this platform.
+    local env_prefix
+    env_prefix="$(cd "$(dirname "$PY")/.." && pwd)"
+    if [[ -d "$env_prefix/conda-meta" ]] && command -v conda >/dev/null 2>&1; then
+        conda install -y -p "$env_prefix" -c conda-forge swig
+        export PATH="$env_prefix/bin:$PATH"
+    elif command -v brew >/dev/null 2>&1; then
+        brew install swig
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y swig
+    else
+        cat >&2 <<'EOF'
+    SWIG was not found and could not be installed automatically. Install it,
+    then re-run this script:
+        pip install swig                     (usually works anywhere)
+        conda install -c conda-forge swig
+        brew install swig
+        sudo apt-get install swig
+EOF
+        exit 1
+    fi
+    command -v swig >/dev/null 2>&1 \
+        || { echo "swig still not on PATH after install" >&2; exit 1; }
+}
+
 # --- 1. The package + its PyPI dependencies (incl. numpy, jupyter) -----------
 log "Installing euclid_phot and its PyPI dependencies"
 "$PY" -m pip install -e ".[dev]"
@@ -107,7 +158,11 @@ if has_module tractor; then
     log "Tractor already installed; skipping"
 else
     log "Installing Tractor (with cython, --no-build-isolation)"
-    "$PY" -m pip install cython
+    ensure_swig
+    # --no-build-isolation uses the env's own build backend, so setuptools and
+    # wheel must be present (Python 3.12+ venvs no longer ship setuptools).
+    # cython + numpy (a euclid_phot dep, already installed) build _mp_fourier.
+    "$PY" -m pip install setuptools wheel cython
     "$PY" -m pip install --no-build-isolation \
         "git+https://github.com/dstndstn/tractor.git"
 fi

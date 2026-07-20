@@ -16,11 +16,13 @@ for analyzing Euclid and ancillary survey data.
    tree in isolation, traced tier by tier on a 50 arcsec field.
 3. **`notebooks/03_injection_recovery.ipynb`**: validation. Sources of
    known flux are injected into the real pixels and recovered by the
-   unmodified pipeline (flux bias below a few percent, pull standard
-   deviation near unity).
+   unmodified pipeline, spanning 19 < m_AB < 27.4 in VIS: flux bias
+   below a few percent throughout, pull standard deviation near unity
+   where photon noise dominates, and the magnitude below which the
+   PSF-systematic floor must be added to the reported errors.
 
 Runtime on the demo field, Apple M3 Pro with ten worker threads:
-~25 minutes for notebook 01, ~1 minute for 02, a few minutes for 03.
+~20 minutes for notebook 01, ~1 minute for 02, ~10 minutes for 03.
 The model-selection tree dominates notebook 01; with the MER prior
 instead it finishes in a few minutes.
 
@@ -64,8 +66,12 @@ pip install -e .[dev]              # [dev] adds jupyter
 
 # 2. Tractor (dstndstn/tractor). --no-build-isolation is needed because
 #    tractor's setup.py imports numpy at build time; this also builds the
-#    _mp_fourier C extension used for the PSF FFT.
-pip install cython
+#    _mp_fourier C extension used for the PSF FFT. The build also needs SWIG
+#    (the `pip install swig` wheel works in any env; conda/brew/apt also work)
+#    and setuptools + wheel in the env (Python 3.12+ venvs no longer ship
+#    setuptools, which --no-build-isolation requires). The install script
+#    handles all of this for you.
+pip install swig setuptools wheel cython
 pip install --no-build-isolation "git+https://github.com/dstndstn/tractor.git"
 
 # 3. astrometry.net's Python utilities (tractor's optimizer imports
