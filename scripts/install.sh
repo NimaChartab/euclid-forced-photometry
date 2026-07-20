@@ -104,6 +104,17 @@ PYEOF
 
 has_module() { "$PY" -c "import $1" >/dev/null 2>&1; }
 
+# Keep a vendored clone pristine: importing it generates __pycache__, which
+# would show as changes in IDEs that auto-detect nested git repos. The
+# clone's .git/info/exclude is a local-only ignore, so nothing upstream is
+# touched. No-op if the pattern is already there.
+exclude_pycache() {
+    local exclude="$1/.git/info/exclude"
+    [[ -d "$1/.git" ]] || return 0
+    grep -qxF "__pycache__/" "$exclude" 2>/dev/null \
+        || echo "__pycache__/" >> "$exclude"
+}
+
 # Tractor's build runs SWIG to generate its C-extension wrappers (the
 # _mp_fourier FFT module). SWIG is a build tool, not a pip dependency of
 # Tractor, so ensure it is present before the build. The official `swig`
@@ -177,6 +188,7 @@ else
         git clone --depth 1 https://github.com/dstndstn/astrometry.net.git \
             "$REPO_ROOT/.anet/astrometry"
     fi
+    exclude_pycache "$REPO_ROOT/.anet/astrometry"
     write_pth astrometry_net.pth "$REPO_ROOT/.anet"
     has_module astrometry.util.fits \
         || { echo "astrometry.util.fits still not importable after setup" >&2; exit 1; }
@@ -192,6 +204,7 @@ if [[ "$WANT_WISE" -eq 1 ]]; then
             git clone --depth 1 https://github.com/legacysurvey/unwise_psf \
                 "$REPO_ROOT/.unwise_psf"
         fi
+        exclude_pycache "$REPO_ROOT/.unwise_psf"
         write_pth unwise_psf.pth "$REPO_ROOT/.unwise_psf/py"
         "$PY" -m pip install fitsio "setuptools<81"
         has_module unwise_psf \
