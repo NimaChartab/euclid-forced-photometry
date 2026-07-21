@@ -426,6 +426,7 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
                      ax=None, gridsize: int = 45,
                      target_per_bin: int = 80, max_bins: int = 15,
                      min_per_bin: int = 5, ylim: float = 1.0,
+                     colorbar: bool = True,
                      xlabel: str = "reference AB magnitude",
                      ylabel: str = "m_Tractor - m_ref (mag)",
                      title: str | None = None):
@@ -453,6 +454,9 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
         of the binned statistics.
     ylim : float
         Half-height of the panel in magnitudes.
+    colorbar : bool
+        Attach a colorbar for the hexbin density (sources per bin, log
+        scale). Default True.
 
     Returns
     -------
@@ -486,9 +490,12 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
 
     x0 = float(np.floor(np.nanmin(mag[sel])))
     x1 = float(np.ceil(np.nanmax(mag[sel])))
-    ax.hexbin(mag[sel], dmag[sel], gridsize=gridsize, cmap="YlGnBu",
-              bins="log", mincnt=1, extent=(x0, x1, -ylim, ylim),
-              linewidths=0.2)
+    hb = ax.hexbin(mag[sel], dmag[sel], gridsize=gridsize, cmap="YlGnBu",
+                   bins="log", mincnt=1, extent=(x0, x1, -ylim, ylim),
+                   linewidths=0.2)
+    if colorbar:
+        cb = ax.figure.colorbar(hb, ax=ax, pad=0.02)
+        cb.set_label("sources per bin")
     if flagged is not None:
         fl = np.asarray(flagged, dtype=bool) & ok
         ax.scatter(mag[fl], dmag[fl], s=24, facecolors="none",
