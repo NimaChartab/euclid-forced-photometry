@@ -125,7 +125,9 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
         img_w = int(hdul[1].header["NAXIS1"])
 
         cos_dec = np.cos(np.radians(dec))
-        dist = np.sqrt(((table["RA"] - ra) * cos_dec) ** 2
+        # Wrap the RA difference into [-180, 180].
+        d_ra = ((table["RA"] - ra + 540.0) % 360.0) - 180.0
+        dist = np.sqrt((d_ra * cos_dec) ** 2
                        + (table["Dec"] - dec) ** 2) * 3600.0
         nearby = table[dist < radius_arcsec]
         if len(nearby) == 0:
@@ -276,7 +278,8 @@ def extract_grid_psf(band: str, ra: float, dec: float,
         dec_s = np.atleast_1d(np.asarray(dec_s, dtype=float))
 
         cos_dec = np.cos(np.radians(dec))
-        dist = np.sqrt(((ra_s - ra) * cos_dec) ** 2
+        d_ra = ((ra_s - ra + 540.0) % 360.0) - 180.0
+        dist = np.sqrt((d_ra * cos_dec) ** 2
                        + (dec_s - dec) ** 2) * 3600.0
         sel = dist < radius_arcsec
         if not sel.any():
@@ -379,7 +382,8 @@ def get_psf_for_source(psf_data, source_ra: float, source_dec: float):
     """
     _require_stamps(psf_data)
     cos_dec = np.cos(np.radians(source_dec))
-    dist = np.sqrt(((psf_data["ra"] - source_ra) * cos_dec) ** 2
+    d_ra = ((np.asarray(psf_data["ra"]) - source_ra + 540.0) % 360.0) - 180.0
+    dist = np.sqrt((d_ra * cos_dec) ** 2
                    + (psf_data["dec"] - source_dec) ** 2) * 3600.0
     idx = int(np.argmin(dist))
     stamp = psf_data["stamps"][idx].astype(np.float32).copy()

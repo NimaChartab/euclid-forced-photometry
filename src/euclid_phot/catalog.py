@@ -88,7 +88,8 @@ def query_mer_catalog(ra: float, dec: float, half_size_deg: float,
         Lower bound on ``flux_vis_psf`` (microJansky). The default of 0 keeps
         every detection with a positive VIS PSF flux.
     require_detection_band : {'VIS','Y','J','H'} or None
-        If given, additionally require a positive ``flux_<band>_templfit``.
+        If given, additionally require a positive ``flux_<band>_templfit``
+        (``flux_vis_psf`` for VIS, which has no TEMPLFIT photometry).
     star_prob_threshold : float
         ``is_star`` is set where ``point_like_prob`` exceeds this. The default
         0.96 follows the Euclid MER paper's high-purity star cut.
@@ -99,7 +100,8 @@ def query_mer_catalog(ra: float, dec: float, half_size_deg: float,
     """
     extra = ""
     if require_detection_band is not None:
-        col = f"flux_{require_detection_band.lower()}_templfit"
+        band = require_detection_band.lower()
+        col = "flux_vis_psf" if band == "vis" else f"flux_{band}_templfit"
         extra = f"\n  AND m.{col} > 0"
     cos_dec = float(np.cos(np.radians(dec)))
     adql = _ADQL.format(
