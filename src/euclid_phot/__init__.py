@@ -60,6 +60,7 @@ _LAZY = {
     "add_extinction_columns": ("extinction", "add_extinction_columns"),
     "EXTINCTION_COEFF": ("config", "EXTINCTION_COEFF"),
     "bright_star_pixel_mask": ("flags", "bright_star_pixel_mask"),
+    "starsignal_pixel_mask": ("flags", "starsignal_pixel_mask"),
     "probable_bright_stars": ("flags", "probable_bright_stars"),
     "MER_VIS_BAD_BITS": ("config", "MER_VIS_BAD_BITS"),
     "MER_VIS_FLAG_BITS": ("config", "MER_VIS_FLAG_BITS"),

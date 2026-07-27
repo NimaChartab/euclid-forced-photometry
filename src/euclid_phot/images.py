@@ -77,6 +77,7 @@ def build_tractor_image(cutout, psf_stamp: np.ndarray,
                         invvar: np.ndarray | None = None,
                         flag: np.ndarray | None = None,
                         flag_bad_bits=_USE_DEFAULT_BAD_BITS,
+                        pixel_mask: np.ndarray | None = None,
                         name: str | None = None,
                         sky: float = 0.0,
                         mag_zero: float | None = None) -> Image:
@@ -91,6 +92,10 @@ def build_tractor_image(cutout, psf_stamp: np.ndarray,
     invvar : ndarray, optional
         Override the inverse-variance map. If not given we compute it from
         ``cutout.rms`` as ``1/rms^2`` (with rms<=0 mapped to invvar=0).
+    pixel_mask : ndarray of bool, optional
+        Extra per-pixel veto applied on top of the FLG bits: the inverse
+        variance is zeroed where True, e.g. the STARSIGNAL bright-star
+        mask from :func:`euclid_phot.flags.starsignal_pixel_mask`.
     name : str, optional
         Image name string. Defaults to ``f"Euclid-{cutout.band}"``.
     sky : float
@@ -118,6 +123,9 @@ def build_tractor_image(cutout, psf_stamp: np.ndarray,
     flag = flag if flag is not None else getattr(cutout, "flag", None)
     bad_bits = MER_VIS_BAD_BITS if flag_bad_bits is _USE_DEFAULT_BAD_BITS else flag_bad_bits
     invvar = _apply_flag(invvar, flag, bad_bits)
+
+    if pixel_mask is not None:
+        invvar = np.where(np.asarray(pixel_mask, dtype=bool), 0.0, invvar)
 
     if mag_zero is None:
         if "MAGZERO" in cutout.header:

@@ -2,6 +2,12 @@
 /data/
 **/_cache/
 
+# Runtime data cache: fields beyond the shipped 200-arcsec demo download
+# from IRSA/S3 on first use (README, "Data and caching"). The shipped demo
+# files are already tracked, so this rule only hides new downloads; use
+# `git add -f` to deliberately ship another field.
+examples/data/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -23,7 +29,10 @@ venv/
 .vscode/
 .idea/
 
-# Catalog written by notebook 01 section 16
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Catalog written by notebook 01 section 21
 *.ecsv
 
 # Vendored GitHub installs
