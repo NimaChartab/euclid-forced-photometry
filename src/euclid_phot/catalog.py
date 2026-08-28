@@ -104,8 +104,14 @@ def query_mer_catalog(ra: float, dec: float, half_size_deg: float,
         col = "flux_vis_psf" if band == "vis" else f"flux_{band}_templfit"
         extra = f"\n  AND m.{col} > 0"
     cos_dec = float(np.cos(np.radians(dec)))
+    cos_edge = max(np.cos(np.radians(dec - half_size_deg)),
+                   np.cos(np.radians(dec + half_size_deg)))
+    radius_deg = float(np.hypot(half_size_deg,
+                                half_size_deg * cos_edge / cos_dec)) + 1e-3
+    circle = (f"CONTAINS(POINT('ICRS', m.ra, m.dec), "
+              f"CIRCLE('ICRS', {ra % 360.0}, {dec}, {radius_deg}))=1")
     adql = _ADQL.format(
-        ra_where=_ra_where(ra % 360.0, half_size_deg / cos_dec),
+        ra_where=f"{circle}\n  AND {_ra_where(ra % 360.0, half_size_deg / cos_dec)}",
         dec_min=dec - half_size_deg,
         dec_max=dec + half_size_deg,
         flux_min=float(brightness_cut_ujy),
