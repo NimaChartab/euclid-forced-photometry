@@ -63,6 +63,7 @@ _LAZY = {
     "starsignal_pixel_mask": ("flags", "starsignal_pixel_mask"),
     "probable_bright_stars": ("flags", "probable_bright_stars"),
     "MER_VIS_BAD_BITS": ("config", "MER_VIS_BAD_BITS"),
+    "MER_NISP_BAD_BITS": ("config", "MER_NISP_BAD_BITS"),
     "MER_VIS_FLAG_BITS": ("config", "MER_VIS_FLAG_BITS"),
     # selection
     "SimpleGalaxy": ("selection", "SimpleGalaxy"),
@@ -83,8 +84,8 @@ _LAZY = {
     "pull_vs_mer": ("calibrate", "pull_vs_mer"),
     # fit
     "fit_forced_photometry": ("fit", "fit_forced_photometry"),
+    "conditional_flux_errors": ("fit", "conditional_flux_errors"),
     "fit_free_shapes": ("fit", "fit_free_shapes"),
-    "refit_fluxes_persource_psf": ("fit", "refit_fluxes_persource_psf"),
     "refine_positions": ("fit", "refine_positions"),
     "measure_residual": ("fit", "measure_residual"),
     # nisp

@@ -46,6 +46,14 @@ MER_VIS_FLAG_BITS = {
 # pixels match clean sky (|data|/rms median 0.41 vs 0.42, ~16% of the field).
 MER_VIS_BAD_BITS = (1 << 0) | (1 << 3) | (1 << 22)  # INVALID | SAT | NO_DATA
 
+MER_NISP_BAD_BITS = (1 << 0) | (1 << 10)
+
+
+def mer_bad_bits_for_band(band: str) -> int:
+    """Default MER pixel veto using the originating instrument's bit map."""
+    name = str(band).upper().removeprefix("NIR_")
+    return MER_NISP_BAD_BITS if name in ("Y", "J", "H") else MER_VIS_BAD_BITS
+
 # STARSIGNAL: bright-star footprints (halos, diffraction spikes). Default
 # bright-star pixel mask; improves chi std 0.77 -> 0.57 on the demo field
 # at the cost of the masked stars' own photometry.
@@ -53,18 +61,15 @@ MER_VIS_STARSIGNAL = 1 << 18
 
 # R_lambda = A_lambda / E(B-V). Euclid: Gordon et al. (2023) MW curve,
 # A_lambda/A_V = 0.678/0.366/0.261/0.160 (Hunt et al. 2025, arXiv:2405.13499)
-# times R_V = 3.1. WISE: Yuan, Liu & Xiang (2013), 0.19 (W1), 0.12 (W2).
 EXTINCTION_COEFF = {
     "VIS": 3.1 * 0.678,   # 2.102
     "Y":   3.1 * 0.366,   # 1.135
     "J":   3.1 * 0.261,   # 0.809
     "H":   3.1 * 0.160,   # 0.496
     "W1":  0.19,
-    "W2":  0.12,
+    "W2":  0.15,
 }
 
-# neo7 (Meisner et al. 2021) is the newest coadd release with a matched
-# unwise_psf model; unwise.me serves through neo11.
 WISE_COADD_VERSION = "neo7"
 
 DEFAULT_DATA_DIR = Path("examples/data")

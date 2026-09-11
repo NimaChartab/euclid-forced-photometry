@@ -1,251 +1,124 @@
-# euclid_phot: multi-band forced photometry for Euclid Q1
+# Euclid forced photometry
 
-Forced photometry across Euclid Q1 (VIS + NISP Y/J/H) and unWISE
-W1/W2, packaged as a Python engine plus reference Jupyter notebooks
-for analyzing Euclid and ancillary survey data.
+Measure fluxes on Euclid Q1 VIS and NISP images using Tractor source models,
+with optional unWISE W1/W2 photometry. VIS constrains the source profiles;
+the lower-resolution fits keep those profiles fixed and solve for flux.
 
+This is an educational analysis package. It provides explicit diagnostics
+and limited validation tests; users must assess the PSF, residuals, source
+list and uncertainty assumptions for their own science sample.
 
 ## Notebooks
 
-1. **`notebooks/01_multiband_forced_photometry.ipynb`**: the full
-   pipeline on a 200 arcsec field. MER catalog and cutouts, bright-star
-   masking, model selection, the VIS prior fit, propagation to NISP and
-   unWISE, residual diagnostics, error calibration, and the final
-   multi-band catalog.
-2. **`notebooks/02_model_selection.ipynb`**: the chi-squared decision
-   tree in isolation, traced tier by tier on a 50 arcsec field.
-3. **`notebooks/03_injection_recovery.ipynb`**: validation. Sources of
-   known flux are injected into the real pixels and recovered by the
-   unmodified pipeline, spanning 19 < m_AB < 27.4 in VIS: flux bias
-   below a few percent throughout, pull standard deviation near unity
-   where photon noise dominates, and the magnitude below which the
-   PSF-systematic floor must be added to the reported errors.
+- [00: How Tractor works](notebooks/00_how_tractor_works.ipynb): one galaxy,
+  with image construction, model parameters and optimization written out.
+- [01: Multi-band walkthrough](notebooks/01_multiband_forced_photometry.ipynb):
+  a 200-arcsec field, source models, Euclid/WISE fits, residuals and catalog checks.
+- [04: One-call example](notebooks/04_one_call.ipynb): a compact 50-arcsec
+  Euclid run and the resulting catalog. WISE is optional.
+- [Supporting 02: Model selection](notebooks/supporting_notebooks/02_model_selection.ipynb):
+  inspect profile trials for neighbouring sources.
+- [Supporting 03: Injection and recovery](notebooks/supporting_notebooks/03_injection_recovery.ipynb):
+  matching-PSF point-source checks on real backgrounds, with explicit acceptance tests.
 
-Runtime on the demo field, Apple M3 Pro with ten worker threads:
-~20 minutes for notebook 01, ~1 minute for 02, ~10 minutes for 03.
-The model-selection tree dominates notebook 01; with the MER prior
-instead it finishes in a few minutes.
+Start with 00 to learn the fitting model, 01 to inspect the full workflow,
+or 04 for a short working example.
 
-## Install
+## Install and run
+
+From the repository directory:
 
 ```bash
-git clone https://github.com/NimaChartab/euclid-forced-photometry
-cd euclid-forced-photometry
-./scripts/install.sh           # VIS + NISP
-./scripts/install.sh --wise    # also the optional unWISE W1/W2 leg
+./scripts/install.sh
+# For optional WISE support, use: ./scripts/install.sh --wise
+# If the script created .venv:
+source .venv/bin/activate
 jupyter lab notebooks/
 ```
 
-`scripts/install.sh` is idempotent (safe to re-run) and installs into an
-active virtualenv or conda env if one is present, otherwise it creates a
-local `.venv`; pass `--python /path/to/python` to target a specific
-interpreter. Notebook 01 also invokes the script from its first cell, so a
-fresh clone runs with no manual setup.
+The install script uses an active virtualenv or conda environment, or creates
+`.venv`. It installs this package plus the required Tractor and astrometry.net
+components. WISE additionally requires `unwise_psf` and its dependencies.
+Use a Jupyter kernel from that environment. If the script created `.venv`,
+activate it with `source .venv/bin/activate` before starting Jupyter.
 
-To run without the WISE leg, install without `--wise` and set
-`TARGET_BANDS["wise"] = ()` in notebook 01 (or pass `target_bands={"wise":
-()}` to the driver).
+The notebooks locate the repository from their working directory and work
+from either `notebooks/` or `notebooks/supporting_notebooks/`. Inputs are
+fetched from public archives on first use; image data are not bundled with
+this source distribution. The notebooks cache them under
+`examples/native_data/`. Set `EUCLID_PHOT_DATA_DIR` to use another cache.
+Network access is required when an input is absent.
 
-The demo cutouts for notebook 01 (a 200 arcsec field) ship with the
-repository under `examples/data/`. The other notebooks' fields, and any
-coordinates you choose, download from IRSA/S3 on first run and cache
-there.
-
-<details>
-<summary>Manual install — what the script does, step by step</summary>
-
-`pip install -e .` already pulls in every PyPI dependency. The three GitHub
-packages below are the only reason there is more than one step: none of them
-is a plain `pip install`.
-
-```bash
-# 1. The package and its PyPI dependencies.
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]              # [dev] adds jupyter
-
-# 2. Tractor (dstndstn/tractor). --no-build-isolation is needed because
-#    tractor's setup.py imports numpy at build time; this also builds the
-#    _mp_fourier C extension used for the PSF FFT. The build also needs SWIG
-#    (the `pip install swig` wheel works in any env; conda/brew/apt also work)
-#    and setuptools + wheel in the env (Python 3.12+ venvs no longer ship
-#    setuptools, which --no-build-isolation requires). The install script
-#    handles all of this for you.
-pip install swig setuptools wheel cython
-pip install --no-build-isolation "git+https://github.com/dstndstn/tractor.git"
-
-# 3. astrometry.net's Python utilities (tractor's optimizer imports
-#    astrometry.util at fit time). Its setup.py defers to `make`, so pip
-#    cannot install it; a source clone on the import path works since the
-#    modules tractor needs are pure Python.
-mkdir -p .anet
-git clone --depth 1 https://github.com/dstndstn/astrometry.net.git .anet/astrometry
-python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'astrometry_net.pth').write_text(str(pathlib.Path('.anet').resolve()))"
-```
-
-Conda users: create an environment first, then run the steps inside it,
-skipping the two `venv` lines (the conda env replaces the `venv`):
-
-```bash
-conda create -n euclid python=3.11
-conda activate euclid
-pip install -e .[dev]              # step 1, without the venv lines
-# ... steps 2-3 above ...
-```
-
-The optional unWISE W1/W2 leg additionally needs the `unwise_psf` PSF model,
-which is not pip-installable, plus `fitsio` (its FITS reader) and
-`setuptools<81` (it imports the deprecated `pkg_resources` API):
-
-```bash
-git clone --depth 1 https://github.com/legacysurvey/unwise_psf .unwise_psf
-python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[0], 'unwise_psf.pth').write_text(str(pathlib.Path('.unwise_psf/py').resolve()))"
-pip install fitsio "setuptools<81"
-```
-
-The `.pth` files make these packages visible to Jupyter kernels as well,
-unlike an exported `PYTHONPATH`.
-
-</details>
-
-## Library
-
-The notebooks import a single package, `euclid_phot`, that exposes both
-individual pipeline steps and a one-call driver:
+## One-call API
 
 ```python
+from pathlib import Path
 import euclid_phot as ep
 
-# 1. MER catalog.
-mer = ep.query_mer_catalog(269.48, 67.30, half_size_deg=200/3600/2)
-
-# 2. Cutouts.
-vis = ep.fetch_cutout("VIS", 269.48, 67.30, 200)
-nisp_cutouts = {b: ep.fetch_cutout(b, 269.48, 67.30, 200) for b in ("Y", "J", "H")}
-
-# 3. PSFs (VIS for the prior fit; one stamp per NISP band for propagation).
-psf = ep.extract_catalog_psf("VIS", 269.48, 67.30, radius_arcsec=150)
-psf_stamp_vis, psf_fwhm_vis = ep.psf_summary(psf)
-psf_stamps_nisp = {}
-for b in ("Y", "J", "H"):
-    psf_data = ep.extract_catalog_psf(b, 269.48, 67.30, radius_arcsec=150)
-    psf_stamps_nisp[b], _ = ep.psf_summary(psf_data)
-
-# 4. Prior fit on VIS (positions + Sersic shape + brightness).
-tim_vis = ep.build_tractor_image(vis, psf_stamp_vis)
-sources = ep.build_sources_from_mer(mer, band="VIS", psf_fwhm_arcsec=psf_fwhm_vis)
-tractor_vis, quality = ep.fit_forced_photometry(tim_vis, sources, band="VIS")
-quality, _ = ep.fit_free_shapes(tractor_vis, tim_vis, sources, quality, band="VIS")
-
-# 5. Propagate to NISP Y/J/H with shapes frozen at the VIS fit; only flux
-#    is free. Returns {band: {"flux_ujy": ndarray, "flux_err_ujy": ndarray}}.
-nisp = ep.fit_nisp_forced(
-    sources, nisp_cutouts, psf_stamps_nisp, bands=("Y", "J", "H"))
-flux_Y_ujy, flux_Y_err_ujy = nisp["Y"]["flux_ujy"], nisp["Y"]["flux_err_ujy"]
-
-# 6. Propagate to unWISE W1/W2. fit_wise_forced keeps the VIS models frozen
-#    (flux-only, as for NISP), fits a per-band sky offset jointly with the
-#    source brightnesses, and reports the chi-MAD inflation factor (chi_inflation) on
-#    source-sparse pixels. source_models="point" collapses every source to
-#    a PointSource instead (Lang et al. 2016, section 3.2).
-wise_cutouts = ep.fetch_unwise_cutouts(269.48, 67.30, size_arcsec=320)
-wise_results = ep.fit_wise_forced(
-    sources, wise_cutouts,
-    ra=269.48, dec=67.30, cutout_size_arcsec=200,
-    bands=("W1", "W2"))
-
-# 7. Cross-check W1/W2 against the Schlafly et al. 2019 unWISE catalog.
-uwcat = ep.query_unwise_2019(269.48, 67.30, radius_arcsec=120)
-
-# The same pipeline through the one-call driver:
 result = ep.run_forced_photometry(
-    269.48, 67.30, 200.0,
-    prior={
-        "band": "VIS",              # image that defines positions + shapes
-        "objects": "mer",           # "mer" = MER catalog, "coords" = user_coords
-        "model_selection": "tree",  # see "Source models" below
-        "free_shapes": True,        # refine shapes after the flux fit
-    },
-    target_bands={
-        "euclid": ("Y", "J", "H"),  # NISP bands to propagate to
-        "wise":   ("W1", "W2"),     # also fit unWISE; () to skip
-    },
-    n_workers=4,
+    269.48, 67.30, 50.0,  # RA, Dec in degrees; box side in arcsec
+    prior={"band": "VIS", "objects": "mer", "model_selection": "tree"},
+    target_bands={"euclid": ("Y", "J", "H"), "wise": ()},
+    psf_product="grid", persource_psf=True,
+    mask_bright_stars=True, with_flag=True, calibrate_errors=True,
+    data_dir=Path("examples/native_data"), n_workers=4,
 )
-
-# Per-band flux + error arrays, assembled into a per-object catalog
-# (flux, 1-sigma error, AB magnitude per band, model class, quality flag):
 catalog = result.to_table()
 catalog.write("photometry.ecsv", overwrite=True)
-
-# Forced photometry at your own positions (no MER catalog required). Only
-# the supplied sources are modeled, so use isolated targets or pass shapes.
-result = ep.run_forced_photometry(
-    269.48, 67.30, 200.0,
-    prior={"objects": "coords"},
-    user_coords=[(269.41, 67.30), (269.55, 67.28)],   # (ra, dec) in degrees
-    target_bands={"euclid": ("Y", "J", "H"), "wise": ()})
 ```
 
-**Source models.** `model_selection` controls how each source's model
-class is chosen. `"prior"` (the default) asserts the catalog or user
-class: MER mode builds `tractor.sersic.SersicGalaxy` with the catalog's
-continuous Sersic index, clipped to [0.4, 6.0], just inside Tractor's
-valid Sersic range of [0.29, 6.3].
-`"tree"` lets a chi-squared ladder pick each source's class per blob;
-the source list stays 1:1 with the input, and detection/ladder
-thresholds can be tuned through `prior["detect"]` and
-`prior["selector"]`. A literal class name (`"point"`, `"sersic"`,
-`"exp"`, `"dev"`) forces that model for every source, seeded from
-catalog shapes. With `free_shapes=False` only brightness is fit. On the
-tree path `free_shapes` is ignored, since shapes are already fit per
-blob.
+`model_selection="prior"` starts from MER classifications and shapes;
+`"tree"` compares profile classes on VIS and also refines positions.
+The tree adapts [The Farmer](https://arxiv.org/abs/2310.07757), with different
+selection details and an additional Sérsic trial. Its shapes are already
+fitted, so `free_shapes` does not add another shape fit on that path.
 
-**Catalog.** `result.to_table()` returns one row per source: flux,
-1-sigma error, and AB magnitude per band; the model class; blend flags
-(`blended` / `n_neighbors` / `nearest_arcsec`); quality flags
-(`bright_star` / `near_bright_star` / `masked` / `edge` / `reliable`,
-plus MER's `det_quality_flag` where present); extinction-corrected
-magnitudes from the MER per-source E(B-V) (Gordon et al. 2023
-coefficients); and per-band 5-sigma depths in the metadata.
+`psf_product="grid"` uses PSF samples on a regular grid; `"catalog"` uses
+samples at MER catalog positions. With `persource_psf=True`, each source
+uses its nearest sample inside a joint fit. Images retain their delivered
+MER pixels. A cutout spanning multiple MER tiles needs separate tile fits.
 
-**Errors.** Calibrated empirically per band. VIS/NISP formal errors
-carry a PSF-scale inflation measured from point-source fits at
-source-free positions (the resampled coadds have correlated pixel
-noise); WISE errors carry a chi-inflation validated against Schlafly
-et al. (2019). `calibrate_errors=False` skips this.
+The package also supports supplied coordinates and selected profile classes;
+consult `help(ep.run_forced_photometry)` for the full argument contract.
+A supplied source list must include relevant neighbours. The command-line
+entry point is `euclid-phot run --help`.
 
-**Pixel masking.** `with_flag=True` drops the MER coadd-fatal FLG
-pixels. `mask_bright_stars=True` masks the MER STARSIGNAL star
-footprints (halos and diffraction spikes) so their light cannot bias
-neighbors; the covered stars are themselves not measured (`nan` in the
-catalog). A geometric fallback exists for data without the FLG plane.
+## Interpreting results
 
-**PSF products.** CATALOG-PSF (one stamp per MER source) or GRID-PSF
-(the model on a regular ~12 arcsec grid; auto-selected for
-user-supplied positions). Override with `psf_product`.
+Flux densities are in microJansky. Positive fluxes have AB magnitudes;
+non-positive fluxes have no ordinary AB magnitude. Zero-information
+measurements are NaN. The output metadata records PSF conventions,
+uncertainty definitions and error-scale factors.
 
-## Command line
+`flux_quality` is a coarse prior-band flux guard. `reliable` describes
+geometric checks in the prior band, while `blended` is a separate proximity
+flag. These are not guarantees of accurate fluxes or isolation in every band.
 
-The command-line script runs the driver for single cutouts:
+Euclid errors are conditional template errors, optionally scaled using
+empty-position point-source fits. WISE uses a residual-based scale factor.
+Neither treatment captures all blending, morphology, PSF or sky uncertainty.
+The reported five-times-median-error magnitude is an error summary, not a
+measured detection-completeness limit.
 
-```bash
-euclid-phot run --ra 269.48 --dec 67.30 --size 50 --out catalog.ecsv
-```
+Shared morphology can fail for color gradients or infrared-only emission.
+Structured residuals and sensitivity to neighbouring models require inspection.
+The example retains a few-percent NISP/MER difference; it should not be removed
+by tuning a PSF to force catalog agreement. WISE blends also remain sensitive
+to PSF shape and source-list completeness.
 
-## Data and caching
+The [Schlafly et al. unWISE catalog](https://arxiv.org/abs/1901.03337) uses
+a different PSF normalization. Notebook 01 transfers our fitted amplitudes
+to that convention for its comparison only; exported fluxes retain their
+fitting convention. Agreement with that catalog is a cross-check, not an
+absolute calibration or proof of individual blended flux accuracy.
 
-The demo field for notebook 01 ships with the repository, so it runs
-with no network calls. Any missing file (the other notebooks' 50 arcsec
-field, or a field at coordinates you choose) is downloaded from IRSA TAP
-+ S3 + unwise.me on first use and cached under `examples/data/`, so
-later runs are offline. The first download of a new field takes a few
-minutes for network transfer and unWISE coadd assembly.
+Matching-PSF injections test rendering and recovery consistency. They do not
+validate the real PSF, galaxy morphology, blind detection completeness, or
+all uncertainty contributions. Supporting notebook 03 states the tested scope.
 
-## Multicore
+## References
 
-`n_workers` parallelizes the cutout fetch, the per-band NISP fits, the
-per-blob tree fits, and the per-source PSF flux refit (the same option
-exists on `fit_nisp_forced` and `run_model_selection`). The fetch
-always benefits. The fit speedup depends on your Tractor build, since
-its compiled FFT may or may not run on several threads at once.
+The image modelling uses [The Tractor](https://github.com/dstndstn/tractor).
+Euclid reference flux definitions are documented in the
+[MER photometry cookbook](https://euclid.esac.esa.int/dr/q1/dpdd/merdpd/merphotometrycookbook.html).
+Please cite the relevant survey and method papers when using their data or methods.

@@ -123,8 +123,8 @@ def blend_flags(ra, dec, fluxes_ujy, *,
                 profile_re_arcsec=None) -> Table:
     """Per-source blending / crowding flags.
 
-    The exported errors are the diagonal of the joint covariance, which
-    understates the uncertainty of strongly covariant (blended) pairs;
+    The exported conditional errors omit off-diagonal information in the
+    normal matrix, understating uncertainty in strongly blended pairs;
     these flags mark the affected rows.
 
     Parameters
@@ -243,6 +243,9 @@ def starsignal_pixel_mask(cutout) -> np.ndarray | None:
     ``fetch_cutout(..., with_flag=True)``); ``bright_star_pixel_mask``
     below is the geometric fallback for that case.
     """
+    if str(cutout.band).upper() != "VIS":
+        raise ValueError("STARSIGNAL is a VIS flag; NISP bit 18 is GHOST, "
+                         "not a bright-star footprint")
     flag_plane = getattr(cutout, "flag", None)
     if flag_plane is None:
         return None

@@ -10,8 +10,8 @@ def plot_workflow(ax=None, *, save_path=None):
     """Draw the forced-photometry pipeline as a labeled flow diagram.
 
     Five phases, left to right: archive inputs, source-model
-    construction, the two-step prior fit on VIS, forced photometry on
-    the target bands, and the calibrated multi-band catalog. Pass
+    construction, the prior fit on VIS, forced photometry on
+    the target bands, and the multi-band catalog. Pass
     ``save_path`` to write a PNG.
     """
     from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
@@ -52,14 +52,13 @@ def plot_workflow(ax=None, *, save_path=None):
 
     header(4.35, "Source models")
     box(3.25, 1.85, 2.2, 2.5, "Two choices",
-        "positions: MER catalog\nor user coordinates\n\n"
-        "models: catalog priors or\nchi-squared decision\ntree on SEP blobs", c_mod)
+        "MER positions\n\n"
+        "catalog models or\nVIS model-selection tree", c_mod)
 
     header(7.15, "Prior fit (VIS)")
-    box(6.05, 3.20, 2.2, 1.35, "Step 1: fluxes",
-        "linear solve, all sources;\nbright-star pixels masked", c_fit)
-    box(6.05, 1.55, 2.2, 1.35, "Step 2: shapes",
-        "bounded refit of interior\ngalaxies; positions fixed", c_fit)
+    box(6.05, 1.55, 2.2, 3.0, "VIS fit",
+        "profiles and positions\nfrom the selected mode;\n"
+        "joint source fluxes;\nmasked pixels excluded", c_fit)
 
     header(9.95, "Forced photometry")
     box(8.85, 3.20, 2.2, 1.35, "NISP Y/J/H",
@@ -69,14 +68,13 @@ def plot_workflow(ax=None, *, save_path=None):
 
     header(12.4, "Catalog")
     box(11.65, 1.55, 2.1, 3.0, "Per-object table",
-        "fluxes + AB magnitudes;\nerrors calibrated at\nsource-free "
-        "positions;\nE(B-V)-corrected mags;\nquality + blend flags;\n"
-        "5-sigma depths", c_out)
+        "fluxes + AB magnitudes;\nestimated errors;\n"
+        "foreground corrections;\nquality + blend flags;\n"
+        "error summaries", c_out)
 
     for y in (4.55, 2.90, 1.25):
         arrow(2.65, y, 3.25, 3.10)
     arrow(5.45, 3.10, 6.05, 3.85)
-    arrow(7.15, 3.20, 7.15, 2.92)
     arrow(8.25, 2.55, 8.85, 3.70)
     arrow(8.25, 2.20, 8.85, 2.20)
     arrow(11.05, 3.90, 11.65, 3.40)
@@ -435,10 +433,10 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
 
     A log-density hexbin of ``-2.5 log10(flux/ref)`` against the reference
     AB magnitude, with the running median, the +/- NMAD band, and (when the
-    two pipelines' errors are given) the scatter expected from the reported
-    errors, all in equal-population magnitude bins. The NMAD tracking the
-    expected curve at the faint end shows the growth of the scatter is the
-    photon noise itself.
+    two pipelines' errors are given) an independent-error reference scale,
+    all in equal-population magnitude bins. Shared data can correlate the
+    measurements; agreement with this curve does not establish noise-only
+    scatter or calibrated uncertainties.
 
     Parameters
     ----------
@@ -446,7 +444,7 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
         Reference and measured fluxes (microJansky), aligned.
     err_ujy, ref_err_ujy : ndarray, optional
         The two pipelines' 1-sigma flux errors; both are needed for the
-        expected-scatter curve.
+        independent-error reference curve.
     sel : ndarray of bool, optional
         Points entering the hexbin and the binned statistics. Defaults to
         every position where both fluxes are finite and positive.
@@ -522,7 +520,7 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
     ax.fill_between(ctr, med - nmad, med + nmad, color="k", alpha=0.15,
                     label="+/- NMAD")
     if pvals is not None and np.isfinite(prd).any():
-        ax.plot(ctr, prd, "r:", lw=1.5, label="expected from errors")
+        ax.plot(ctr, prd, "r:", lw=1.5, label="independent-error reference")
         ax.plot(ctr, -prd, "r:", lw=1.5)
     ax.axhline(0, color="r", ls="--", lw=1)
     ax.set_xlabel(xlabel)

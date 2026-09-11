@@ -73,9 +73,6 @@ EUCLID_DEFAULTS = dict(
     # field (median Tractor/MER 0.93 vs 0.99 at segment S/N < 20).
     full_ladder=True,
     full_ladder_min_snr=0.0,
-    # Off by default: residual/chi maps are rendered through one PSF, so
-    # per-blob-stamp fits read as extra chi (field chi std 0.65 -> 0.71)
-    # even though the fits themselves are better.
     per_source_psf=False,
     # Guarded SersicGalaxy 6th tier (extension beyond published Farmer);
     # on by default: accepted only when it lowers the total chi-squared on
@@ -243,6 +240,7 @@ def _make_masked_image(tim: Image, footprint: np.ndarray, psf=None,
         invvar[~footprint[y0:y1, x0:x1]] = 0.0
         data = tim.getImage()[y0:y1, x0:x1]
         wcs = tim.getWcs().shifted(x0, y0)
+        psf_obj = psf_obj.getShifted(x0, y0)
     new_tim = Image(
         data=data,
         invvar=invvar,
@@ -464,18 +462,23 @@ class ModelSelector:
         :class:`History` instance when ``history=True``, otherwise ``None``.
 
         ``psf_stamp`` (HxW float array) overrides ``tim_vis``'s PSF for this
-        blob; pass the CATALOG-PSF stamp of the brightest member to remove
-        the averaged-PSF bias on the bright source.
+        blob. This is an explicit constant-PSF approximation for all its
+        members; omit it to retain the image's spatial PSF.
 
-        ``psf_by_member`` (dict[mer_idx -> stamp]) is taken in preference to
-        ``psf_stamp``; the stamp of the brightest member of ``blob`` is used.
+        ``psf_by_member`` (dict[mer_idx -> stamp]) supplies local samples
+        for a spatial PSF. Each member uses its own nearest sample while
+        all members remain in the joint fit. ``psf_stamp`` explicitly
+        overrides this with a constant PSF when supplied.
         """
+        member_psf = None
         if psf_by_member is not None and psf_stamp is None:
-            brightest = max(blob.member_mer_indices,
-                            key=lambda i: float(mer_cat[i]["flux_vis_sersic"]))
-            psf_stamp = (psf_by_member.get(brightest)
-                         if isinstance(psf_by_member, dict)
-                         else psf_by_member[brightest])
+            from .spatial_psf import SpatialPixelizedPSF
+            members = list(blob.member_mer_indices)
+            member_psf = SpatialPixelizedPSF({
+                'stamps': np.stack([psf_by_member[i] for i in members]),
+                'ra': np.array([float(mer_cat[i]['ra']) for i in members]),
+                'dec': np.array([float(mer_cat[i]['dec']) for i in members]),
+            }, tim_vis.getWcs())
 
         # Fit on the blob bounding box (identical likelihood, much cheaper
         # rendering); the history path keeps the full frame because
@@ -493,7 +496,8 @@ class ModelSelector:
             tim_blob = _make_masked_image(tim_vis, blob.footprint,
                                           psf=blob_psf, bbox=bbox)
         else:
-            tim_blob = _make_masked_image(tim_vis, blob.footprint, bbox=bbox)
+            tim_blob = _make_masked_image(tim_vis, blob.footprint,
+                                          psf=member_psf, bbox=bbox)
         idx_list = list(blob.member_mer_indices)
         hist = History(blob_id=blob.blob_id, members=idx_list) if history else None
 
@@ -1147,6 +1151,14 @@ def assign_mer_to_blobs(mer_cat, blobs: list[Blob], wcs) -> list[Blob]:
     blob are dropped; sources inside a blob but outside any SEP segment are
     attached to the geometrically nearest SEP segment in that blob.
     """
+    projected = []
+    if blobs:
+        for mer_idx, row in enumerate(mer_cat):
+            try:
+                px, py = wcs.positionToPixel(RaDecPos(float(row["ra"]), float(row["dec"])))
+            except Exception:
+                continue
+            projected.append((mer_idx, px, py))
     assigned: list[Blob] = []
     for blob in blobs:
         mer_indices = []
@@ -1154,11 +1166,7 @@ def assign_mer_to_blobs(mer_cat, blobs: list[Blob], wcs) -> list[Blob]:
         new_sep_rows: dict[int, dict] = {}
         sep_labels = list(blob.segments.keys())  # original 0-based SEP indices
 
-        for mer_idx, row in enumerate(mer_cat):
-            try:
-                px, py = wcs.positionToPixel(RaDecPos(float(row["ra"]), float(row["dec"])))
-            except Exception:
-                continue
+        for mer_idx, px, py in projected:
             xi, yi = int(round(px)), int(round(py))
             H, W = blob.footprint.shape
             if not (0 <= yi < H and 0 <= xi < W):
@@ -1286,20 +1294,15 @@ def run_model_selection(
     blobs_raw, segmap, _ = detect_blobs(vis_data, vis_invvar, **detect_kwargs)
     blobs = assign_mer_to_blobs(mer_cat, blobs_raw, tim_vis.getWcs())
 
-    # fit_blob picks the stamp of each blob's brightest member.
     psf_by_member = None
     if (psf_data is not None and selector.per_source_psf
+            and not getattr(tim_vis.getPsf(), 'is_spatial', False)
             and psf_data.get("stamps") is not None
             and len(psf_data["stamps"]) > 0):
-        from .psf import get_psf_for_source
-        psf_by_member = {}
-        for _i, _row in enumerate(mer_cat):
-            try:
-                _stamp, _, _ = get_psf_for_source(
-                    psf_data, float(_row["ra"]), float(_row["dec"]))
-                psf_by_member[_i] = _stamp
-            except Exception:
-                continue
+        from .spatial_psf import SpatialPixelizedPSF
+        tim_vis = _make_masked_image(
+            tim_vis, np.ones(tim_vis.shape, dtype=bool),
+            psf=SpatialPixelizedPSF(psf_data, tim_vis.getWcs()))
 
     sources_list: list[object | None] = [None] * len(mer_cat)
     counts = {name: 0 for name in MODEL_NAMES}
@@ -1449,4 +1452,3 @@ def reproduce_figure3(
     if save_path is not None:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig, axes
-

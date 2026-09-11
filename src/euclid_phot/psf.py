@@ -1,7 +1,7 @@
 """PSF-stamp extraction from MER PSF data products.
 
-Each MER tile ships two PSF products, both holding 21x21 stamps packed into
-one large FITS image:
+Each MER tile ships two PSF products, both holding stamps of a band-dependent
+size packed into one large FITS image:
 
 * CATALOG-PSF: one stamp per MER catalog source, at the source
   positions. For measurement positions that are MER sources (the default
@@ -28,37 +28,55 @@ from astropy.io import fits
 from .config import DEFAULT_PSF_DIR
 
 
-def _resolve_catalog_psf_s3(band: str, products: dict | None) -> str:
+def _resolve_catalog_psf_s3(band: str, products: dict | None, tile_id=None) -> str:
     """Find the CATALOG-PSF S3 path for ``band``.
 
     Either takes it from a ``products`` dict (output of
     ``discover_mer_mosaics``) or raises with a helpful message.
     """
     if products is not None and band in products and "psf_catalog" in products[band]:
-        return products[band]["psf_catalog"]["s3"]
+        product = products[band]["psf_catalog"]
+        if tile_id is None and "science" in products[band]:
+            tile_id = products[band]["science"]["tile_id"]
+        if tile_id is not None:
+            from .cutouts import _matching_tile
+            product = _matching_tile(product, tile_id)
+        return product["s3"]
     raise ValueError(
         f"CATALOG-PSF for band {band!r} not in the products dict. "
         "Pass the output of discover_mer_mosaics(..., bands=(...,'PSF...'))."
     )
 
 
-def _normalize_to_center(stamps: np.ndarray) -> np.ndarray:
-    """Roll each stamp so its peak lies at (half, half)."""
-    out = np.empty_like(stamps)
-    h = stamps.shape[1] // 2
-    for k in range(len(stamps)):
-        s = stamps[k]
-        py, px = np.unravel_index(s.argmax(), s.shape)
-        if px != h or py != h:
-            s = np.roll(np.roll(s, h - py, axis=0), h - px, axis=1)
-        out[k] = s
-    return out
+_PSF_CACHE_VERSION = "archive-origin-v1"
+_CATALOG_PSF_CACHE_VERSION = "fits-origin-v2"
+
+
+def _tile_from_path(path):
+    import re
+    match = re.search(r"TILE([0-9]+)", path or "")
+    return match.group(1) if match else None
+
+
+def _requested_cache(cache, tile_id, s3_path):
+    """Isolate explicit tile/product requests from unverified older caches."""
+    import hashlib
+    path_tile = _tile_from_path(s3_path)
+    if tile_id is not None and path_tile is not None and str(tile_id) != path_tile:
+        raise ValueError("Explicit PSF path does not match the science tile")
+    suffix = ""
+    if tile_id is not None:
+        suffix += "_tile" + hashlib.sha256(str(tile_id).encode()).hexdigest()[:12]
+    if s3_path is not None:
+        suffix += "_src" + hashlib.sha256(s3_path.encode()).hexdigest()[:12]
+    return cache.with_name(cache.stem + suffix + cache.suffix)
 
 
 def extract_catalog_psf(band: str, ra: float, dec: float,
                         *,
                         s3_path: str | None = None,
                         products: dict | None = None,
+                        tile_id: str | None = None,
                         radius_arcsec: float = 60.0,
                         data_dir: str | Path = DEFAULT_PSF_DIR,
                         force_download: bool = False) -> dict:
@@ -74,6 +92,9 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
         Output of ``discover_mer_mosaics``. When neither ``s3_path`` nor
         ``products`` is given and the cache is empty, discovery runs
         automatically (one SIA query).
+    tile_id : str, optional
+        Science cutout MERTILE. Select its PSF product and use a tile-specific
+        cache, including when discovery prefers another tile.
     radius_arcsec : float
         Stamp acceptance radius around (ra, dec), capped at ~60-200 arcsec
         for typical cutout sizes.
@@ -90,26 +111,22 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
     cache = data_dir / (
         f"psf_stamps_{band.lower()}"
         f"_{ra:.4f}_{dec:.4f}"
-        f"_r{int(round(radius_arcsec))}.npz"
+        f"_r{int(round(radius_arcsec))}_{_CATALOG_PSF_CACHE_VERSION}.npz"
     )
+    if tile_id is None and products is not None:
+        tile_id = products.get(band, {}).get("science", {}).get("tile_id")
+    cache = _requested_cache(cache, tile_id, s3_path)
     if cache.exists() and not force_download:
-        d = np.load(cache)
-        return {
-            "stamps":   d["stamps"],
-            "ra":       d["ra"],
-            "dec":      d["dec"],
-            "x":        d["x"],
-            "y":        d["y"],
-            "fwhm":     d["fwhm"],
-            "stmpsize": int(d["stmpsize"]),
-        }
+        with np.load(cache) as d:
+            return {key: (d[key].item() if d[key].ndim == 0 else d[key])
+                    for key in d.files}
 
     if s3_path is None:
         if products is None:
             from .cutouts import discover_mer_mosaics
             products = discover_mer_mosaics(
                 ra, dec, radius_arcsec / 3600.0, bands=(band,))
-        s3_path = _resolve_catalog_psf_s3(band, products)
+        s3_path = _resolve_catalog_psf_s3(band, products, tile_id)
 
     # Byte-range reads: HDU[2] (small stamp catalog) in full, then one
     # hdu.section read of the nearby-stamp bounding box from HDU[1]
@@ -151,8 +168,8 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
             }
 
         # Bounding box of the nearby stamps in HDU[1] pixel coordinates.
-        xc = np.asarray(nearby["x_center"], dtype=int)
-        yc = np.asarray(nearby["y_center"], dtype=int)
+        xc = np.asarray(nearby["x_center"], dtype=int) - 1
+        yc = np.asarray(nearby["y_center"], dtype=int) - 1
         x0 = max(0, int(xc.min()) - half)
         x1 = min(img_w, int(xc.max()) + half + 1)
         y0 = max(0, int(yc.min()) - half)
@@ -175,7 +192,6 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
         nearby = nearby[keep_idx]
 
         stamps = np.array(stamps)
-        stamps = _normalize_to_center(stamps)
         result = {
             "stamps":   stamps,
             "ra":       np.asarray(nearby["RA"]),
@@ -186,6 +202,9 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
             "stmpsize": stmpsize,
         }
 
+    result["s3_path"] = s3_path
+    result["tile_id"] = str(tile_id or _tile_from_path(s3_path) or "")
+    result["product"] = "catalog" if "psf_stamps_" in cache.name else "grid"
     data_dir.mkdir(parents=True, exist_ok=True)
     # Write to a temp file first, then rename, so an interrupted run never
     # leaves a half-written cache. np.savez appends ".npz" to names that lack
@@ -196,10 +215,16 @@ def extract_catalog_psf(band: str, ra: float, dec: float,
     return result
 
 
-def _resolve_grid_psf_s3(band: str, products: dict | None) -> str:
+def _resolve_grid_psf_s3(band: str, products: dict | None, tile_id=None) -> str:
     """Find the GRID-PSF S3 path for ``band`` (see _resolve_catalog_psf_s3)."""
     if products is not None and band in products and "psf_grid" in products[band]:
-        return products[band]["psf_grid"]["s3"]
+        product = products[band]["psf_grid"]
+        if tile_id is None and "science" in products[band]:
+            tile_id = products[band]["science"]["tile_id"]
+        if tile_id is not None:
+            from .cutouts import _matching_tile
+            product = _matching_tile(product, tile_id)
+        return product["s3"]
     raise ValueError(
         f"GRID-PSF for band {band!r} not in the products dict. "
         "Pass the output of discover_mer_mosaics(...)."
@@ -210,6 +235,7 @@ def extract_grid_psf(band: str, ra: float, dec: float,
                      *,
                      s3_path: str | None = None,
                      products: dict | None = None,
+                     tile_id: str | None = None,
                      radius_arcsec: float = 60.0,
                      data_dir: str | Path = DEFAULT_PSF_DIR,
                      force_download: bool = False) -> dict:
@@ -227,33 +253,29 @@ def extract_grid_psf(band: str, ra: float, dec: float,
 
     Parameters and return schema are identical to
     :func:`extract_catalog_psf`. Cached to
-    ``data_dir/psf_grid_stamps_<band>_<ra>_<dec>_r<radius>.npz``, a prefix
-    distinct from the CATALOG-PSF cache.
+    ``data_dir/psf_grid_stamps_<band>_<ra>_<dec>_r<radius>_<version>.npz``,
+    a prefix distinct from the CATALOG-PSF cache.
     """
     data_dir = Path(data_dir)
     cache = data_dir / (
         f"psf_grid_stamps_{band.lower()}"
         f"_{ra:.4f}_{dec:.4f}"
-        f"_r{int(round(radius_arcsec))}.npz"
+        f"_r{int(round(radius_arcsec))}_{_PSF_CACHE_VERSION}.npz"
     )
+    if tile_id is None and products is not None:
+        tile_id = products.get(band, {}).get("science", {}).get("tile_id")
+    cache = _requested_cache(cache, tile_id, s3_path)
     if cache.exists() and not force_download:
-        d = np.load(cache)
-        return {
-            "stamps":   d["stamps"],
-            "ra":       d["ra"],
-            "dec":      d["dec"],
-            "x":        d["x"],
-            "y":        d["y"],
-            "fwhm":     d["fwhm"],
-            "stmpsize": int(d["stmpsize"]),
-        }
+        with np.load(cache) as d:
+            return {key: (d[key].item() if d[key].ndim == 0 else d[key])
+                    for key in d.files}
 
     if s3_path is None:
         if products is None:
             from .cutouts import discover_mer_mosaics
             products = discover_mer_mosaics(
                 ra, dec, radius_arcsec / 3600.0, bands=(band,))
-        s3_path = _resolve_grid_psf_s3(band, products)
+        s3_path = _resolve_grid_psf_s3(band, products, tile_id)
 
     # Same byte-range strategy as extract_catalog_psf.
     from .netutils import S3_FSSPEC_KWARGS, retry
@@ -343,7 +365,7 @@ def extract_grid_psf(band: str, ra: float, dec: float,
                 "stmpsize": stmpsize,
             }
         keep = np.asarray(keep, dtype=int)
-        stamps = _normalize_to_center(np.array(stamps, dtype=np.float32))
+        stamps = np.array(stamps, dtype=np.float32)
         idx = np.where(sel)[0][keep]
         result = {
             "stamps":   stamps,
@@ -355,6 +377,9 @@ def extract_grid_psf(band: str, ra: float, dec: float,
             "stmpsize": stmpsize,
         }
 
+    result["s3_path"] = s3_path
+    result["tile_id"] = str(tile_id or _tile_from_path(s3_path) or "")
+    result["product"] = "catalog" if "psf_stamps_" in cache.name else "grid"
     data_dir.mkdir(parents=True, exist_ok=True)
     tmp = cache.with_name(cache.stem + ".tmp" + cache.suffix)
     np.savez(tmp, **result)
@@ -366,14 +391,14 @@ def _require_stamps(psf_data):
     stamps = psf_data.get("stamps")
     if stamps is None or len(stamps) == 0:
         raise ValueError(
-            "psf_data has no CATALOG-PSF stamps near the target. "
-            "extract_catalog_psf found none within radius_arcsec; widen "
+            "psf_data has no usable PSF stamps near the target. "
+            "The selected product has no samples within radius_arcsec; widen "
             "radius_arcsec or confirm the field has MER PSF coverage.")
     return stamps
 
 
 def get_psf_for_source(psf_data, source_ra: float, source_dec: float):
-    """Return the nearest catalog-PSF stamp to a source position.
+    """Return the nearest PSF sample to a source position.
 
     Returns
     -------

@@ -12,7 +12,7 @@ from tractor import ConstantSky, Image, LinearPhotoCal
 from tractor.psf import PixelizedPSF
 from tractor.wcs import ConstantFitsWcs
 
-from .config import AB_MAG_ZP, MER_VIS_BAD_BITS
+from .config import AB_MAG_ZP, mer_bad_bits_for_band
 
 # Distinguishes the default bad-bit set from an explicit flag_bad_bits=None.
 _USE_DEFAULT_BAD_BITS = object()
@@ -72,8 +72,9 @@ def _apply_flag(invvar: np.ndarray, flag: np.ndarray | None,
     return np.where(bad, 0.0, invvar)
 
 
-def build_tractor_image(cutout, psf_stamp: np.ndarray,
+def build_tractor_image(cutout, psf_stamp: np.ndarray | None = None,
                         *,
+                        psf_data: dict | None = None,
                         invvar: np.ndarray | None = None,
                         flag: np.ndarray | None = None,
                         flag_bad_bits=_USE_DEFAULT_BAD_BITS,
@@ -87,8 +88,11 @@ def build_tractor_image(cutout, psf_stamp: np.ndarray,
     ----------
     cutout : Cutout
         Output of ``fetch_cutout``; provides data, rms, wcs, header.
-    psf_stamp : ndarray (H, W) float32, sum=1
-        The PSF used by ``PixelizedPSF``.
+    psf_stamp : ndarray (H, W) float32, sum=1, optional
+        The PSF used when ``psf_data`` is omitted. Not needed for local PSFs.
+    psf_data : dict, optional
+        CATALOG-PSF or GRID-PSF samples. When supplied, each source is
+        rendered with its nearest sample, throughout fitting and residuals.
     invvar : ndarray, optional
         Override the inverse-variance map. If not given we compute it from
         ``cutout.rms`` as ``1/rms^2`` (with rms<=0 mapped to invvar=0).
@@ -119,9 +123,9 @@ def build_tractor_image(cutout, psf_stamp: np.ndarray,
         # non-finite data.
         invvar = np.where(np.isfinite(cutout.data), invvar, 0.0)
 
-    # Default bad bits are the narrow coadd-fatal set; see MER_VIS_BAD_BITS.
     flag = flag if flag is not None else getattr(cutout, "flag", None)
-    bad_bits = MER_VIS_BAD_BITS if flag_bad_bits is _USE_DEFAULT_BAD_BITS else flag_bad_bits
+    bad_bits = (mer_bad_bits_for_band(cutout.band)
+                if flag_bad_bits is _USE_DEFAULT_BAD_BITS else flag_bad_bits)
     invvar = _apply_flag(invvar, flag, bad_bits)
 
     if pixel_mask is not None:
@@ -143,19 +147,32 @@ def build_tractor_image(cutout, psf_stamp: np.ndarray,
             mag_zero = 23.9
     scale = 10 ** (0.4 * (float(mag_zero) - AB_MAG_ZP))
 
-    # PixelizedPSF assumes a unit-sum PSF.
-    psf_sum = float(np.sum(psf_stamp))
-    if not np.isfinite(psf_sum) or psf_sum <= 0:
-        raise ValueError(
-            f"psf_stamp has non-finite or non-positive sum ({psf_sum}); "
-            "cannot build a PixelizedPSF from it.")
-    psf_stamp = np.asarray(psf_stamp, dtype=np.float32) / psf_sum
+    wcs = ConstantFitsWcs(AstropyWCSAdapter(cutout.wcs))
+    if psf_data is not None:
+        psf_tile = psf_data.get("tile_id")
+        science_tile = cutout.header.get("MERTILE")
+        if psf_tile and science_tile and str(psf_tile) != str(science_tile):
+            raise ValueError("PSF samples and science cutout come from different MER tiles")
+    if psf_data is None:
+        if psf_stamp is None:
+            raise ValueError('Supply psf_data for local PSFs or a constant psf_stamp.')
+        # PixelizedPSF assumes a unit-sum PSF.
+        psf_sum = float(np.sum(psf_stamp))
+        if not np.isfinite(psf_sum) or psf_sum <= 0:
+            raise ValueError(
+                f"psf_stamp has non-finite or non-positive sum ({psf_sum}); "
+                "cannot build a PixelizedPSF from it.")
+        psf_stamp = np.asarray(psf_stamp, dtype=np.float32) / psf_sum
+        psf = PixelizedPSF(psf_stamp)
+    else:
+        from .spatial_psf import SpatialPixelizedPSF
+        psf = SpatialPixelizedPSF(psf_data, wcs)
 
     return Image(
-        data=cutout.data,
+        data=np.where(np.isfinite(cutout.data), cutout.data, 0.0),
         invvar=invvar,
-        psf=PixelizedPSF(psf_stamp),
-        wcs=ConstantFitsWcs(AstropyWCSAdapter(cutout.wcs)),
+        psf=psf,
+        wcs=wcs,
         photocal=LinearPhotoCal(scale, band=cutout.band),
         sky=ConstantSky(sky),
         name=name or f"Euclid-{cutout.band}",

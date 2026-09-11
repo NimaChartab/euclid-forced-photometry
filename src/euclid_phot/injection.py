@@ -9,12 +9,10 @@ pipeline, and check that the recovered fluxes are unbiased and that
     run_injection_recovery  inject, run the pipeline, join with the truth
     summarize_recovery      bias / scatter / pull / completeness per flux bin
 
-Injections are rendered with each position's nearest GRID-PSF stamp when
-available (see :func:`euclid_phot.psf.extract_grid_psf`), falling back to
-the field-average stamp; the measurement side runs the standard pipeline,
-so any PSF-product mismatch is part of what the test measures. No extra
-noise is added: source photon noise is subdominant to the sky noise at the
-fluxes this validates (a few to ~100 microJansky on Q1 coadds).
+By default, injection and recovery both use the nearest GRID-PSF stamp.
+Different products can be requested explicitly to study PSF mismatch.
+No source photon noise is added: these experiments test recovery of a
+deterministic added signal on the existing sky, not a complete noise model.
 """
 from __future__ import annotations
 
@@ -196,6 +194,7 @@ def run_injection_recovery(*,
                            rng=0,
                            verbose: bool = False,
                            return_result: bool = False,
+                           injection_psf_product: str = "grid",
                            **run_kwargs):
     """Run the full injection-recovery test on a (cached) field.
 
@@ -215,6 +214,11 @@ def run_injection_recovery(*,
 
     ``rng`` defaults to a fixed seed for reproducibility; pass fresh entropy
     for independent realizations.
+
+    ``injection_psf_product`` selects ``'grid'`` or ``'catalog'`` for the
+    added signal. Recovery uses the same product unless ``psf_product``
+    is supplied explicitly in ``run_kwargs``. Missing products raise an
+    error instead of silently changing the experiment.
     """
     from pathlib import Path
 
@@ -224,13 +228,20 @@ def run_injection_recovery(*,
     from .pipeline import run_forced_photometry
     from .psf import extract_catalog_psf, extract_grid_psf
 
+    extractors = {"grid": extract_grid_psf, "catalog": extract_catalog_psf}
+    if injection_psf_product not in extractors:
+        raise ValueError("injection_psf_product must be 'grid' or 'catalog'")
+    run_kwargs.setdefault("psf_product", injection_psf_product)
     data_dir = Path(data_dir)
     prior_band = bands[0]
     if prior_band != "VIS":
         raise ValueError("the injection driver assumes a VIS prior band")
 
     cuts = {b: fetch_cutout(b, target_ra, target_dec, cutout_size_arcsec,
-                            data_dir=data_dir / "cutouts")
+                            data_dir=data_dir / "cutouts",
+                            with_flag=((bool(run_kwargs.get("with_flag", False))
+                                        and b == prior_band)
+                                       or run_kwargs.get("mask_bright_stars") is True))
             for b in bands}
 
     mer_cache = data_dir / (f"mer_catalog_{target_ra:.4f}_{target_dec:.4f}"
@@ -249,17 +260,11 @@ def run_injection_recovery(*,
     psf_radius = max(60.0, float(cutout_size_arcsec) * 0.75)
     injected = {}
     for b in bands:
-        # GRID-PSF for injected (non-MER) positions; CATALOG-PSF fallback.
-        try:
-            pd = extract_grid_psf(b, target_ra, target_dec,
-                                  radius_arcsec=psf_radius,
-                                  data_dir=data_dir / "psf")
-            if len(pd.get("stamps", ())) == 0:
-                raise ValueError("no GRID-PSF stamps")
-        except Exception:
-            pd = extract_catalog_psf(b, target_ra, target_dec,
-                                     radius_arcsec=psf_radius,
-                                     data_dir=data_dir / "psf")
+        pd = extractors[injection_psf_product](
+            b, target_ra, target_dec, radius_arcsec=psf_radius,
+            tile_id=cuts[b].header.get("MERTILE"), data_dir=data_dir / "psf")
+        if len(pd.get("stamps", ())) == 0:
+            raise ValueError(f"No {injection_psf_product} PSF stamps for {b}")
         injected[b] = inject_sources(cuts[b], pd, truth, band=b)
 
     merged = vstack([mer, truth], join_type="outer",
@@ -306,22 +311,17 @@ def summarize_recovery(catalog, truth, *,
 
     cat_ids = np.asarray(catalog["object_id"])
     idx_by_id = {int(i): k for k, i in enumerate(cat_ids) if i < 0}
-    rows, true_flux = [], []
-    for r in truth:
-        k = idx_by_id.get(int(r["object_id"]))
-        if k is not None:
-            rows.append(k)
-            true_flux.append(float(r[tcol]))
-    if not rows:
-        raise ValueError(
-            "no injected rows (object_id < 0) found in the catalog; was it "
-            "produced by run_injection_recovery?")
-    rows = np.asarray(rows)
-    true_flux = np.asarray(true_flux)
-
-    flux = np.asarray(catalog[fcol], dtype=float)[rows]
-    err = np.asarray(catalog[ecol], dtype=float)[rows]
-    quality = np.asarray(catalog["flux_quality"], dtype=bool)[rows]
+    if len(truth) == 0:
+        raise ValueError("truth must contain at least one injected source")
+    rows = np.array([idx_by_id.get(int(i), -1) for i in truth["object_id"]])
+    matched = rows >= 0
+    true_flux = np.asarray(truth[tcol], dtype=float)
+    flux = np.full(len(truth), np.nan)
+    err = np.full(len(truth), np.nan)
+    quality = np.zeros(len(truth), dtype=bool)
+    flux[matched] = np.asarray(catalog[fcol], dtype=float)[rows[matched]]
+    err[matched] = np.asarray(catalog[ecol], dtype=float)[rows[matched]]
+    quality[matched] = np.asarray(catalog["flux_quality"], dtype=bool)[rows[matched]]
 
     det = quality & np.isfinite(flux) & np.isfinite(err) & (err > 0)
     snr = np.where(det, flux / np.where(err > 0, err, np.inf), 0.0)

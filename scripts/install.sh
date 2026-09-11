@@ -196,8 +196,11 @@ fi
 
 # --- 4. unWISE PSF leg (optional) --------------------------------------------
 if [[ "$WANT_WISE" -eq 1 ]]; then
-    if has_module unwise_psf; then
-        log "unwise_psf already importable; skipping the WISE leg"
+    # The top-level unwise_psf package can import without its rendering
+    # dependencies. Check the actual implementation after installing them.
+    "$PY" -m pip install fitsio "setuptools<81"
+    if has_module unwise_psf.unwise_psf; then
+        log "unwise_psf rendering module already importable"
     else
         log "Setting up the unWISE W1/W2 leg (unwise_psf, fitsio, setuptools<81)"
         if [[ ! -d "$REPO_ROOT/.unwise_psf/py" ]]; then
@@ -206,8 +209,7 @@ if [[ "$WANT_WISE" -eq 1 ]]; then
         fi
         exclude_pycache "$REPO_ROOT/.unwise_psf"
         write_pth unwise_psf.pth "$REPO_ROOT/.unwise_psf/py"
-        "$PY" -m pip install fitsio "setuptools<81"
-        has_module unwise_psf \
+        has_module unwise_psf.unwise_psf \
             || { echo "unwise_psf still not importable after setup" >&2; exit 1; }
     fi
 else
