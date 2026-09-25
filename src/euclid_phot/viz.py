@@ -220,52 +220,6 @@ def show_chi_map(data, model, invvar, *,
     return ax, info
 
 
-def show_psf_stamps(psf_data: dict, *, pixel_scale_arcsec: dict | None = None,
-                    log_floor: float = 1e-5, axes=None):
-    """Gallery of field-average PSF stamps, one panel per band.
-
-    ``psf_data`` maps band name to the dict returned by
-    :func:`euclid_phot.psf.extract_catalog_psf` or
-    :func:`euclid_phot.psf.extract_grid_psf`. Each panel shows the
-    field-average stamp on a logarithmic stretch (normalized to the peak,
-    floored at ``log_floor``) with the median FWHM and the number of stamps
-    annotated. Pass ``pixel_scale_arcsec`` (band -> arcsec/pixel) to label
-    the axes in arcsec; the Euclid Q1 MER mosaics, and the PSF stamps drawn
-    from them, share a common 0.1 arcsec/pix grid across VIS and NISP.
-
-    Returns the array of axes.
-    """
-    from .psf import psf_summary
-
-    bands = list(psf_data)
-    if axes is None:
-        _, axes = plt.subplots(1, len(bands),
-                               figsize=(2.8 * len(bands), 3.1))
-    axes = np.atleast_1d(axes)
-    for ax, band in zip(axes, bands, strict=True):
-        stamp, fwhm = psf_summary(psf_data[band])
-        stamp = np.asarray(stamp, float)
-        n = stamp.shape[0]
-        norm = stamp / stamp.max()
-        extent = None
-        if pixel_scale_arcsec and band in pixel_scale_arcsec:
-            half = 0.5 * n * pixel_scale_arcsec[band]
-            extent = [-half, half, -half, half]
-        ax.imshow(np.log10(np.maximum(norm, log_floor)), origin="lower",
-                  cmap="magma", vmin=np.log10(log_floor), vmax=0,
-                  extent=extent)
-        nstamp = len(psf_data[band].get("stamps", []))
-        ax.set_title(f"{band}: FWHM = {fwhm:.2f}\"  (n={nstamp})",
-                     fontsize=13)
-        if extent is not None:
-            ax.set_xlabel("arcsec")
-            if ax is axes[0]:
-                ax.set_ylabel("arcsec")
-        else:
-            ax.set_xticks([]); ax.set_yticks([])
-    return axes
-
-
 def show_psf_grid(grid: dict, *, cutout=None, mer_cat=None,
                   n_examples: int = 3, log_floor: float = 1e-5):
     """Spatial layout and variation of a PSF-stamp extraction.
@@ -350,33 +304,6 @@ def show_psf_grid(grid: dict, *, cutout=None, mer_cat=None,
 
 _WAVELENGTHS_UM = {"VIS": 0.71, "Y": 1.08, "J": 1.37, "H": 1.77,
                    "W1": 3.368, "W2": 4.618}
-
-
-def show_sed(fluxes_ujy: dict, errors_ujy: dict | None = None,
-             *, ax=None, label: str | None = None,
-             marker: str = "o", linestyle: str = "-"):
-    """Plot a single source's SED (flux vs effective wavelength).
-
-    ``fluxes_ujy`` is a dict like ``{'VIS': 12.3, 'Y': 14.1, ...}``.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 4))
-    bands = [b for b, v in fluxes_ujy.items()
-             if v is not None and np.isfinite(v) and v > 0
-             and b in _WAVELENGTHS_UM]
-    wl = [_WAVELENGTHS_UM[b] for b in bands]
-    fl = [fluxes_ujy[b] for b in bands]
-    err = (None if errors_ujy is None
-           else [errors_ujy.get(b, 0.0) for b in bands])
-    ax.errorbar(wl, fl, yerr=err, fmt=marker, linestyle=linestyle,
-                ms=8, label=label)
-    ax.set_xlabel("Wavelength (micron)")
-    ax.set_ylabel("Flux (microJansky)")
-    ax.set_yscale("log")
-    ax.grid(True, alpha=0.3)
-    if label is not None:
-        ax.legend(fontsize=12)
-    return ax
 
 
 def show_error_calibration(calib: dict, *, ax=None):

@@ -318,12 +318,10 @@ def summarize_recovery(catalog, truth, *,
     true_flux = np.asarray(truth[tcol], dtype=float)
     flux = np.full(len(truth), np.nan)
     err = np.full(len(truth), np.nan)
-    quality = np.zeros(len(truth), dtype=bool)
     flux[matched] = np.asarray(catalog[fcol], dtype=float)[rows[matched]]
     err[matched] = np.asarray(catalog[ecol], dtype=float)[rows[matched]]
-    quality[matched] = np.asarray(catalog["flux_quality"], dtype=bool)[rows[matched]]
 
-    det = quality & np.isfinite(flux) & np.isfinite(err) & (err > 0)
+    det = np.isfinite(flux) & np.isfinite(err) & (err > 0)
     snr = np.where(det, flux / np.where(err > 0, err, np.inf), 0.0)
     completeness = float(np.mean(det & (snr > snr_min)))
 

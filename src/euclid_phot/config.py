@@ -3,25 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# IRSA table names use British spelling ("catalogue");
-# euclid_q1_mer_catalog is an unknown table on IRSA.
-MER_TABLE = "euclid_q1_mer_catalogue"
-MER_MORPHOLOGY_TABLE = "euclid_q1_mer_morphology"
 MER_COLLECTION = "euclid_DpdMerBksMosaic"
 
-# S3 bucket holding Q1 MER products
-S3_BUCKET = "nasa-irsa-euclid-q1"
-
-# Nominal pixel scales (arcsec / pix). Used for sanity checks and seeding only;
-# the actual scale is always read from the WCS at runtime.
-VIS_PIXEL_SCALE = 0.10
-NISP_PIXEL_SCALE = 0.30
 UNWISE_PIXEL_SCALE = 2.75
-
-# Nominal PSF HWHM (arcsec). Used when no per-source PSF is available.
-VIS_PSF_HWHM = 0.08
-NISP_PSF_HWHM = 0.25
-UNWISE_PSF_HWHM = 3.0
 
 # Default search radius for IRSA SIA tile discovery. Padded so a 50″ cutout
 # still finds every overlapping MER tile (each tile is ~32′ across).
@@ -42,8 +26,7 @@ MER_VIS_FLAG_BITS = {
 }
 
 # Coadd-unusable bits only. Per-frame defect bits (HOT, COSMIC, ...) are OR'd
-# from any input frame, but the coadd used the clean frames there; COSMIC-only
-# pixels match clean sky (|data|/rms median 0.41 vs 0.42, ~16% of the field).
+# from any input frame, but the coadd used the clean frames there.
 MER_VIS_BAD_BITS = (1 << 0) | (1 << 3) | (1 << 22)  # INVALID | SAT | NO_DATA
 
 MER_NISP_BAD_BITS = (1 << 0) | (1 << 10)
@@ -55,18 +38,17 @@ def mer_bad_bits_for_band(band: str) -> int:
     return MER_NISP_BAD_BITS if name in ("Y", "J", "H") else MER_VIS_BAD_BITS
 
 # STARSIGNAL: bright-star footprints (halos, diffraction spikes). Default
-# bright-star pixel mask; improves chi std 0.77 -> 0.57 on the demo field
-# at the cost of the masked stars' own photometry.
+# bright-star pixel mask; the masked stars themselves are not measured.
 MER_VIS_STARSIGNAL = 1 << 18
 
 # R_lambda = A_lambda / E(B-V). Euclid: Gordon et al. (2023) MW curve,
-# A_lambda/A_V = 0.678/0.366/0.261/0.160 (Hunt et al. 2025, arXiv:2405.13499)
+# A_lambda/A_V = 0.678/0.366/0.261/0.160 (Hunt et al. 2025, A&A 697, A9)
 EXTINCTION_COEFF = {
     "VIS": 3.1 * 0.678,   # 2.102
     "Y":   3.1 * 0.366,   # 1.135
     "J":   3.1 * 0.261,   # 0.809
     "H":   3.1 * 0.160,   # 0.496
-    "W1":  0.19,
+    "W1":  0.19,          # Yuan et al. 2013, MNRAS 430, 2188
     "W2":  0.15,
 }
 
@@ -77,8 +59,3 @@ DEFAULT_CUTOUT_DIR = DEFAULT_DATA_DIR / "cutouts"
 DEFAULT_PSF_DIR = DEFAULT_DATA_DIR / "psf"
 DEFAULT_WISE_CACHE_DIR = DEFAULT_DATA_DIR / "wise"
 
-
-# Demo target used by the notebooks.
-DEMO_TARGET_RA = 269.48
-DEMO_TARGET_DEC = 67.30
-DEMO_CUTOUT_SIZE_ARCSEC = 50.0

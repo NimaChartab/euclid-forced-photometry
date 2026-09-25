@@ -18,10 +18,9 @@ import copy as _copy
 import warnings
 
 import numpy as np
-from tractor import NanoMaggies, PointSource, Tractor
+from tractor import PointSource, Tractor
 from tractor.galaxy import FixedCompositeGalaxy
 
-from .images import build_tractor_image
 from .models import _configure_shape_steps
 
 _UJY_PER_NMGY = 3.631
@@ -250,8 +249,8 @@ def refine_positions(tractor, tim, sources, fit_quality, *,
     Thaws the centroid of sources with ``flux > flux_floor_ujy`` at least
     ``margin_pix`` from the edge, then jointly re-optimizes flux + position.
     Moves beyond ``max_shift_arcsec`` revert to the prior position: the
-    genuine Q1 catalog-to-centroid offset is sub-pixel (median ~0.02 arcsec,
-    95th percentile < 0.1 arcsec), so a larger move is a runaway. Fluxes are
+    genuine Q1 catalog-to-centroid offset is sub-pixel, so a larger move is
+    a runaway. Fluxes are
     re-settled at the final positions, which later NISP/unWISE fits share.
 
     Returns ``(fit_quality, n_refined, shift_arcsec)`` where ``shift_arcsec``

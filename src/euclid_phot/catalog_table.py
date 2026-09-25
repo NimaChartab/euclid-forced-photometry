@@ -91,7 +91,7 @@ def build_catalog(result, *, origin: str | None = None,
     -------
     astropy.table.Table
         One row per source, aligned with ``result.sources``. Columns:
-        ``object_id, ra, dec, origin, model, is_star, flux_quality`` and, for
+        ``object_id, ra, dec, origin, model, is_star`` and, for
         each band that was measured, ``flux_<band>_ujy``, ``flux_err_<band>_ujy``,
         ``mag_<band>_ab``, ``mag_err_<band>_ab``. Units are attached to columns
         and the error definition per band family is recorded in ``table.meta``.
@@ -122,9 +122,6 @@ def build_catalog(result, *, origin: str | None = None,
     if origin is None:
         origin = (result.prior or {}).get("objects", "mer")
 
-    quality = (result.flux_quality if result.flux_quality is not None
-               else np.ones(n, dtype=bool))
-
     tab = Table()
     tab["object_id"] = object_id
     tab["ra"] = ra * u.deg
@@ -132,7 +129,6 @@ def build_catalog(result, *, origin: str | None = None,
     tab["origin"] = np.array([origin] * n)
     tab["model"] = np.array(model)
     tab["is_star"] = np.asarray(is_star, dtype=bool)
-    tab["flux_quality"] = np.asarray(quality, dtype=bool)
 
     bands = [b for b in _BAND_ORDER if b in result.fluxes_ujy]
     bands += [b for b in result.fluxes_ujy if b not in bands]
@@ -216,7 +212,8 @@ def build_catalog(result, *, origin: str | None = None,
                 ra, dec, flag_flux, flag_stars,
                 wcs=getattr(prior_cut, "wcs", None),
                 flag_plane=getattr(prior_cut, "flag", None),
-                shape=getattr(prior_cut, "shape", None))
+                shape=getattr(prior_cut, "shape", None),
+                pixel_mask=getattr(result, "prior_pixel_mask", None))
             for c in fs.colnames:
                 tab[c] = fs[c]
             tab.meta["quality_flag_scope"] = (

@@ -4,7 +4,9 @@ examples/data/
 data/
 outputs/
 notebooks/*.ecsv
+notebooks/*.csv
 notebooks/supporting_notebooks/*.ecsv
+notebooks/supporting_notebooks/*.csv
 # Local environments, build products, and notebook scratch files
 .venv/
 venv/
@@ -19,3 +21,5 @@ dist/
 .DS_Store
 .pytest_cache/
 .ruff_cache/
+/photometry.csv
+/photometry.ecsv

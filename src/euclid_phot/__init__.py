@@ -81,7 +81,6 @@ _LAZY = {
     "draw_empty_positions": ("calibrate", "draw_empty_positions"),
     "measure_error_inflation": ("calibrate", "measure_error_inflation"),
     "calibrate_result_errors": ("calibrate", "calibrate_result_errors"),
-    "pull_vs_mer": ("calibrate", "pull_vs_mer"),
     # fit
     "fit_forced_photometry": ("fit", "fit_forced_photometry"),
     "conditional_flux_errors": ("fit", "conditional_flux_errors"),
@@ -94,7 +93,6 @@ _LAZY = {
     "fetch_unwise_cutouts": ("wise", "fetch_unwise_cutouts"),
     "get_wise_psf": ("wise", "get_wise_psf"),
     "fit_wise_forced": ("wise", "fit_wise_forced"),
-    "query_catwise2020": ("wise", "query_catwise2020"),
     "query_unwise_2019": ("wise", "query_unwise_2019"),
     "vega_mag_to_ujy": ("wise", "vega_mag_to_ujy"),
     "select_isolated_sources": ("wise", "select_isolated_sources"),

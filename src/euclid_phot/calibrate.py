@@ -257,7 +257,6 @@ def calibrate_result_errors(result, *,
         euclid_present = [b for b in bands if b in euclid_present]
 
     rng = np.random.default_rng(rng)
-    prior_band = (result.prior or {}).get("band")
     calib = getattr(result, "error_calibration", None)
     if calib is None:
         calib = {}
@@ -292,53 +291,3 @@ def calibrate_result_errors(result, *,
     except AttributeError:
         pass
     return calib
-
-
-def pull_vs_mer(result, *, band: str = "VIS") -> dict:
-    """Pull distribution of Tractor vs MER fluxes (diagnostic only).
-
-    Computes ``(flux_tractor - flux_mer) / sqrt(err_tractor^2 + err_mer^2)``
-    per source. Tractor and MER share pixels, so the pull is biased narrow;
-    it is a consistency check, not an error calibration.
-
-    Returns ``{"pull", "pull_std", "n", "note"}``; ``pull`` is aligned with
-    the sources that had finite values in both catalogs (``mask`` gives
-    their indices into the result arrays).
-    """
-    from astropy.stats import mad_std
-
-    col_map = {
-        "VIS": ("flux_vis_sersic", "fluxerr_vis_sersic"),
-        "Y": ("flux_y_sersic", "fluxerr_y_sersic"),
-        "J": ("flux_j_sersic", "fluxerr_j_sersic"),
-        "H": ("flux_h_sersic", "fluxerr_h_sersic"),
-    }
-    if band not in col_map:
-        raise ValueError(f"pull_vs_mer supports Euclid bands only, got {band!r}")
-    fcol, ecol = col_map[band]
-    mer = result.mer_cat
-    if mer is None or fcol not in getattr(mer, "colnames", []):
-        raise ValueError(
-            f"result.mer_cat has no {fcol!r} column (user-coords run?); "
-            "the MER pull diagnostic needs a real MER catalog.")
-
-    def _filled(col):
-        a = mer[col]
-        return np.asarray(a.filled(np.nan) if hasattr(a, "filled") else a,
-                          dtype=float)
-
-    f_mer, e_mer = _filled(fcol), _filled(ecol)
-    f_t = np.asarray(result.fluxes_ujy[band], dtype=float)
-    e_t = np.asarray(result.flux_errs_ujy[band], dtype=float)
-    ok = (np.isfinite(f_t) & np.isfinite(e_t) & (e_t > 0)
-          & np.isfinite(f_mer) & np.isfinite(e_mer) & (e_mer > 0))
-    pull = (f_t[ok] - f_mer[ok]) / np.sqrt(e_t[ok] ** 2 + e_mer[ok] ** 2)
-    return {
-        "pull": pull,
-        "mask": np.where(ok)[0],
-        "pull_std": float(mad_std(pull)) if pull.size else np.nan,
-        "n": int(pull.size),
-        "note": ("diagnostic only: Tractor and MER share pixels, so their "
-                 "errors are correlated and the pull is biased narrow; do "
-                 "not use as a calibration source."),
-    }

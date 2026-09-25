@@ -272,11 +272,6 @@ def _write_mask_fits(path: Path, mask: np.ndarray, wcs: WCS, header: fits.Header
     tmp.replace(path)
 
 
-def _read_mask_fits(path: Path) -> np.ndarray:
-    with fits.open(path) as hdul:
-        return np.nan_to_num(hdul[0].data, nan=0).astype(np.int32)
-
-
 def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
                  *,
                  products: dict | None = None,

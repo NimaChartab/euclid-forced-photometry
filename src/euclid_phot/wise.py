@@ -67,65 +67,13 @@ def vega_mag_to_ujy(mag_vega, band: str):
     """Convert a WISE Vega magnitude to AB microJansky.
 
     Accepts scalar or array input. The Vega -> AB offsets are
-    ``W1 = 2.699``, ``W2 = 3.339`` (Lang 2014 / Schlafly+2019, the
-    convention used by unWISE and CatWISE2020).
+    ``W1 = 2.699``, ``W2 = 3.339`` (Jarrett et al. 2011, the convention
+    used by unWISE and CatWISE2020).
 
     m_AB = m_Vega + Vega_offset[band]; f_uJy = 3.631 * 10**((22.5 - m_AB) / 2.5).
     """
     m_ab = np.asarray(mag_vega, dtype=float) + _VEGA_OFFSET[band]
     return _UJY_PER_NMGY * 10.0 ** ((22.5 - m_ab) / 2.5)
-
-
-def query_catwise2020(ra: float, dec: float, radius_arcsec: float):
-    """Pull the CatWISE2020 catalog inside ``radius_arcsec`` of (ra, dec).
-
-    Returns an astropy Table with columns ``ra``, ``dec``, ``ra_pm``,
-    ``dec_pm`` (proper-motion-corrected positions), ``w1mpro_pm`` /
-    ``w2mpro_pm`` (Vega magnitudes from the proper-motion-aware fit),
-    their errors, and derived ``w1_ujy`` / ``w2_ujy`` AB-microJansky
-    columns ready to compare against ``fit_wise_forced``.
-
-    Catalog: Marocco et al. 2021 ApJS 253 8. The IRSA table is
-    ``catwise_2020``. The Vega -> AB offsets used here (W1=2.699,
-    W2=3.339; Lang 2014 / Schlafly+2019) match the unWISE convention;
-    they differ from Wright+2010 AllWISE by ~0.02 mag and are the right
-    choice when comparing to forced photometry on unWISE coadds.
-    """
-    import math
-    for name, val in (("ra", ra), ("dec", dec), ("radius_arcsec", radius_arcsec)):
-        if not math.isfinite(val):
-            raise ValueError(f"{name} must be finite, got {val!r}")
-    if radius_arcsec <= 0:
-        raise ValueError(f"radius_arcsec must be positive, got {radius_arcsec}")
-
-    radius_deg = radius_arcsec / 3600.0
-    adql = f"""
-    SELECT ra, dec, ra_pm, dec_pm,
-           w1mpro_pm, w1sigmpro_pm,
-           w2mpro_pm, w2sigmpro_pm,
-           w1nm, w2nm
-    FROM catwise_2020
-    WHERE CONTAINS(POINT('J2000', ra, dec),
-                   CIRCLE('J2000', {float(ra)}, {float(dec)}, {radius_deg}))=1
-    """
-    from .netutils import retry
-    cat = retry(lambda: Irsa.query_tap(query=adql).to_table(),
-                what="IRSA TAP CatWISE query")
-
-    # np.asarray on a MaskedColumn substitutes the ~1e20 fill value;
-    # force masked -> NaN.
-    def _col_to_nan(col):
-        if hasattr(col, "filled"):
-            return np.asarray(col.filled(np.nan), dtype=float)
-        return np.asarray(col, dtype=float)
-
-    w1mag = _col_to_nan(cat["w1mpro_pm"])
-    w2mag = _col_to_nan(cat["w2mpro_pm"])
-    cat["w1_ujy"] = np.where(np.isfinite(w1mag),
-                              vega_mag_to_ujy(w1mag, "W1"), np.nan)
-    cat["w2_ujy"] = np.where(np.isfinite(w2mag),
-                              vega_mag_to_ujy(w2mag, "W2"), np.nan)
-    return cat
 
 
 def _query_unwise_table(adql, *, cache_dir=DEFAULT_WISE_CACHE_DIR / "catalogs"):
@@ -168,7 +116,7 @@ def query_unwise_2019(ra: float, dec: float, radius_arcsec: float, *,
 
     The IRSA TAP table is ``unwise_2019``. Fluxes are stored in Vega
     nanomaggies (``flux_1`` for W1, ``flux_2`` for W2) and converted to AB
-    microJansky via the Lang 2014 / Schlafly+2019 Vega offsets (W1=2.699,
+    microJansky via the Jarrett et al. 2011 Vega offsets (W1=2.699,
     W2=3.339) and 3.631 microJy = 1 AB nanomaggy. Primary detections
     in either band are included; primary status removes tile duplicates
     and does not certify photometric quality. Apply per-band validity
@@ -310,8 +258,9 @@ def _fetch_unwise_mask_tile(coadd_id: str, version: str,
     cutout grid (``ref_wcs`` / ``ref_shape``).
 
     Pulls the per-tile ``-msk.fits.gz`` from the coadd archive (~90 kB
-    gzipped, a static Meisner 2018 product shared across NEO epochs) and
-    reprojects it nearest-neighbor. Returns an int32 array shaped like the
+    gzipped, a static product shared across NEO epochs; Meisner et al.
+    2019, PASP 131, 124504) and reprojects it nearest-neighbor. Returns an
+    int32 array shaped like the
     cutout, or None if the tile is unavailable (masking is then skipped).
     """
     from reproject import reproject_interp
@@ -344,12 +293,12 @@ def _fetch_unwise_mask_tile(coadd_id: str, version: str,
         return None
 
 
-# unWISE bitmask groups (Meisner 2018, 31 bits). The default drops spike,
-# halo, and ghost pixels; the broad near-bright-star bits (0-3) and latent
-# bits (13-20) flag large, mostly recoverable areas and stay unset.
+# unWISE bitmask groups (Meisner et al. 2019, PASP 131, 124504, Table 2).
+# The default drops spike, halo, and ghost pixels; the broad near-bright-star
+# bits (0-3) and latent bits (13-20) flag large, mostly recoverable areas and
+# stay unset.
 def _UNWISE_BIT(*bits):
     return sum(1 << b for b in bits)
-
 
 
 UNWISE_SPIKE_BITS = _UNWISE_BIT(27, 28, 29, 30)

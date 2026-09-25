@@ -7,7 +7,7 @@ ApJS 269, 20; Figures 3-4) onto the Tractor machinery used here.
 ``sufficient_thresh`` = 1.5 is the paper's chi^2_N bad-fit criterion;
 ``simplegalaxy_radius`` (0.30 arcsec), ``simplegalaxy_penalty`` (0.05) and
 ``exp_dev_similar_thresh`` (0.15) are Euclid tunings of the Farmer values
-(0.45, 0.1, 0.1).
+(0.45, 0.1, 0.2).
 
 Deviations from Farmer: positions are frozen during the tree, with a hard
 ``max_pos_shift_arcsec`` clamp at the final joint re-fit; every source takes
@@ -64,13 +64,11 @@ EUCLID_DEFAULTS = dict(
     blob_dilate_pix=4,
     max_steps=50,
     dlnp_crit=1e-3,
-    # Farmer's seed bound (r_e <= 2.7 arcsec) is a COSMOS tuning; a railed
-    # radius leaves a ring residual on large VIS galaxies, so use the same
-    # 20 arcsec guard models.py applies to MER-seeded shapes.
+    # A railed radius leaves a ring residual on large VIS galaxies, so use
+    # the same 20 arcsec guard models.py applies to MER-seeded shapes.
     max_re_arcsec=20.0,
-    # Every tier evaluated, lowest reduced chi-squared wins. The published
-    # first-sufficient shortcut biases faint fluxes ~7% low on the demo
-    # field (median Tractor/MER 0.93 vs 0.99 at segment S/N < 20).
+    # Every tier evaluated, lowest reduced chi-squared wins; the published
+    # first-sufficient shortcut biases faint fluxes low.
     full_ladder=True,
     full_ladder_min_snr=0.0,
     per_source_psf=False,
@@ -188,9 +186,8 @@ def _seed_shape_from_sep(sep_row: dict, pixscale_arcsec: float,
                          max_re_arcsec: float | None = None) -> EllipseESoft:
     """Build an initial Tractor shape from a SEP detection row.
 
-    Mirrors Farmer's seeding except the radius cap: Farmer bounds
-    log(r_eff) in [-5, 1] (r_eff <= 2.72 arcsec, a COSMOS tuning); the
-    upper bound here defaults to ``EUCLID_DEFAULTS['max_re_arcsec']``.
+    Mirrors Farmer's seeding; the radius cap defaults to
+    ``EUCLID_DEFAULTS['max_re_arcsec']``.
     """
     a = max(float(sep_row["a"]), 0.5)
     b = max(float(sep_row["b"]), 0.5)
@@ -268,8 +265,7 @@ def _count_free_params(source) -> int:
     """Number of currently-thawed Tractor parameters on a source.
 
     A static per-class count would overcount the dof by 1-2 in stages where
-    pos is frozen, biasing the reduced chi^2 by 1-4% (Weaver et al. 2023,
-    eq. 5).
+    pos is frozen, biasing the reduced chi^2.
     """
     try:
         n = int(source.numberOfParams())
@@ -769,9 +765,9 @@ class ModelSelector:
                     src.freezeParam("shape")
             self._optimize(tractor_final)
 
-        # Clamp runaway centroids back to the MER prior (2/57 sources moved
-        # ~2 px on the demo field) and re-fit flux-only; runs last so no
-        # later refit reintroduces drift past the cap.
+        # Clamp runaway centroids back to the MER prior and re-fit
+        # flux-only; runs last so no later refit reintroduces drift past
+        # the cap.
         self._clamp_positions(tractor_final, all_sources_final, idx_list,
                               mer_cat)
 
@@ -873,9 +869,8 @@ class ModelSelector:
             prev_chi2 = prev_tot / max(npix_eval - n_free_prev, 1)
 
             # Two starts, n=1 and n=4: the Sersic likelihood is bimodal for
-            # a disk+core galaxy (an n=4 seed chases the core to n=6.1 on
-            # the demo field). Each start gets a fresh seed shape since the
-            # first fit mutates it.
+            # a disk+core galaxy. Each start gets a fresh seed shape since
+            # the first fit mutates it.
             saved = all_sources_final[pos_in_list]
             best = None   # (total chi2, reduced chi2, segment chi2, source, n)
 
@@ -1069,7 +1064,7 @@ def detect_blobs(
     config. The deblend and grouping defaults are the SExtractor/SEP
     defaults plus a 4-pixel dilation, gentler than Farmer's shipped values
     (``DEBLEND_CONT=1e-10``, ``DEBLEND_NTHRESH=256``, 0.2" dilation), which
-    over-split this field.
+    over-split Euclid VIS blends.
     """
     import sep
     from scipy import ndimage
@@ -1206,6 +1201,81 @@ def assign_mer_to_blobs(mer_cat, blobs: list[Blob], wcs) -> list[Blob]:
             sep_rows=new_sep_rows,
         ))
     return assigned
+
+
+def unlisted_sep_detections(mer_cat, tim_vis, vis_data, vis_invvar, *,
+                            min_separation_pix: float = 3.0,
+                            min_snr: float = 5.0,
+                            mask_margin_pix: int = 3,
+                            **detect_kwargs) -> dict:
+    """SEP detections that share a blob with a catalog row but match none.
+
+    Runs the same detection and assignment as :func:`run_model_selection`.
+    Inside every blob that contains at least one ``mer_cat`` row, the SEP
+    segments no row was attached to are returned as candidate neighbours;
+    blobs without a catalog row are ignored. A candidate is skipped when it
+    lies closer than ``min_separation_pix`` to a catalog row, when its
+    segment flux is below ``min_snr`` times the pixel noise summed in
+    quadrature over the segment, or when the segment comes within
+    ``mask_margin_pix`` of a zero-weight pixel (bright-star mask, flagged
+    or missing data), where detections are treated as the masked object's
+    light.
+
+    Returns a dict of arrays: ``ra``, ``dec`` (deg), ``flux`` (SEP
+    isophotal flux in image counts), ``snr``, ``x``, ``y`` (pixels).
+    """
+    from scipy import ndimage
+
+    blobs_raw, _, _ = detect_blobs(vis_data, vis_invvar, **detect_kwargs)
+    wcs = tim_vis.getWcs()
+    finite_iv = vis_invvar[np.isfinite(vis_invvar) & (vis_invvar > 0)]
+    iv_floor = float(np.median(finite_iv)) * 1e-6 if finite_iv.size else 0.0
+    good = np.isfinite(vis_invvar) & (vis_invvar > iv_floor)
+    near_mask = ~good
+    if mask_margin_pix > 0 and near_mask.any():
+        near_mask = ndimage.binary_dilation(
+            near_mask, iterations=int(mask_margin_pix))
+    assigned = {b.blob_id: b for b in assign_mer_to_blobs(mer_cat, blobs_raw, wcs)}
+    listed = []
+    for row in mer_cat:
+        try:
+            listed.append(wcs.positionToPixel(
+                RaDecPos(float(row["ra"]), float(row["dec"]))))
+        except Exception:
+            continue
+    listed = np.asarray(listed, dtype=float).reshape(-1, 2)
+
+    out = {k: [] for k in ("ra", "dec", "flux", "snr", "x", "y")}
+    for raw in blobs_raw:
+        blob = assigned.get(raw.blob_id)
+        if blob is None:
+            continue
+        # assign_mer_to_blobs re-keys the segment arrays without copying
+        # them, so identity tells which SEP segments received a row.
+        taken = {id(seg) for seg in blob.segments.values()}
+        for label, seg in raw.segments.items():
+            if id(seg) in taken:
+                continue
+            sep_row = raw.sep_rows[label]
+            x, y = float(sep_row["x"]), float(sep_row["y"])
+            if listed.size and np.hypot(listed[:, 0] - x,
+                                        listed[:, 1] - y).min() < min_separation_pix:
+                continue
+            if np.any(seg & near_mask):
+                continue
+            pix = seg & good
+            noise = float(np.sqrt(np.sum(1.0 / vis_invvar[pix]))) if pix.any() else np.inf
+            snr = float(sep_row["flux"]) / noise if noise > 0 else 0.0
+            if not snr >= min_snr:
+                continue
+            pos = wcs.pixelToPosition(x, y)
+            out["ra"].append(float(pos.ra))
+            out["dec"].append(float(pos.dec))
+            out["flux"].append(float(sep_row["flux"]))
+            out["snr"].append(snr)
+            out["x"].append(x)
+            out["y"].append(y)
+    return {k: np.asarray(v, dtype=float) for k, v in out.items()}
 
 
 # ---------------------------------------------------------------------------
