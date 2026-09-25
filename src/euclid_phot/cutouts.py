@@ -1,7 +1,7 @@
 """Cutout discovery and fetch for Euclid Q1 MER mosaics.
 
 Two cache layers: a small cutout-FITS cache at
-``data_dir/<band>_<ptype>_<ra>_<dec>_<size>.fits`` (ptype is science, rms,
+``data_dir/<band>_<ptype>_<ra>_<dec>_<size>_native-v1.fits`` (ptype is science, rms,
 or flag; flag planes are gzipped as ``.fits.gz``), read directly when
 present; and a fallback to S3 lazy partial reads
 (``fits.open(..., use_fsspec=True)`` plus ``hdu.section``) whose result is
@@ -22,11 +22,10 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
-from astropy.nddata import Cutout2D
+from astropy.nddata.utils import overlap_slices, PartialOverlapError, NoOverlapError
 from astropy.wcs import WCS
 from astroquery.ipac.irsa import Irsa
-from reproject import reproject_interp
-from reproject.mosaicking import reproject_and_coadd
+from astropy.wcs.utils import proj_plane_pixel_scales
 
 from .config import (
     DEFAULT_CUTOUT_DIR,
@@ -171,9 +170,6 @@ def _open_mosaic(s3_path: str, mosaic_cache_dir: Path | None):
         local_path = Path(mosaic_cache_dir) / fname
         if local_path.exists():
             try:
-                with local_path.open("rb") as _f:
-                    if _f.read(6) != b"SIMPLE":
-                        raise OSError("not a FITS file")
                 return fits.open(str(local_path), memmap=True), f"local ({fname[:40]})"
             except OSError:
                 pass
@@ -186,118 +182,56 @@ def _open_mosaic(s3_path: str, mosaic_cache_dir: Path | None):
     )
 
 
-def _build_output_wcs(ra, dec, size_arcsec, pixel_scale_deg, ctype):
-    size_pix = int(round(size_arcsec / 3600.0 / pixel_scale_deg))
-    out_wcs = WCS(naxis=2)
-    out_wcs.wcs.crval = [ra, dec]
-    out_wcs.wcs.crpix = [size_pix / 2.0 + 0.5, size_pix / 2.0 + 0.5]
-    out_wcs.wcs.cdelt = [-pixel_scale_deg, pixel_scale_deg]
-    out_wcs.wcs.ctype = list(ctype)
-    return out_wcs, size_pix
-
-
-def _read_tile_partial(tile, ra, dec, size_arcsec, mosaic_cache_dir):
-    hdul_ctx, _ = _open_mosaic(tile["s3"], mosaic_cache_dir)
-    with hdul_ctx as hdul:
-        for hdu in hdul:
-            if not hasattr(hdu, "shape") or hdu.shape is None:
-                continue
-            if len(hdu.shape) < 2 or hdu.header.get("NAXIS", 0) < 2:
-                continue
-            wcs = WCS(hdu.header)
-            cx, cy = wcs.world_to_pixel_values(ra, dec)
-            ps_arcsec = abs(wcs.pixel_scale_matrix[0, 0]) * 3600.0
-            size_pix = int(round(size_arcsec / ps_arcsec))
-            margin = size_pix
-            ix, iy = int(round(float(cx))), int(round(float(cy)))
-            y0 = max(0, iy - margin)
-            y1 = min(hdu.shape[0], iy + margin + 1)
-            x0 = max(0, ix - margin)
-            x1 = min(hdu.shape[1], ix + margin + 1)
-            if x0 >= x1 or y0 >= y1:
-                return None
-            sub = np.array(hdu.section[y0:y1, x0:x1], dtype=np.float64)
-            cut_wcs = wcs.deepcopy()
-            cut_wcs.wcs.crpix = [wcs.wcs.crpix[0] - x0,
-                                 wcs.wcs.crpix[1] - y0]
-            return sub, cut_wcs, hdu.header
-    return None
+class _TileCoverageError(ValueError):
+    """The requested rectangle is not contained by this tile."""
 
 
 def _single_tile_cutout(tile, ra, dec, size_arcsec, mosaic_cache_dir):
-    result = _read_tile_partial(tile, ra, dec, size_arcsec, mosaic_cache_dir)
-    if result is None:
-        raise ValueError(f"tile {tile.get('tile_id')} has no overlap with cutout")
-    data, wcs, header = result
-    cx, cy = wcs.world_to_pixel_values(ra, dec)
-    ps_arcsec = abs(wcs.pixel_scale_matrix[0, 0]) * 3600.0
-    size_pix = int(round(size_arcsec / ps_arcsec))
-    co = Cutout2D(data, (float(cx), float(cy)), size_pix,
-                  wcs=wcs, mode="partial", fill_value=0.0)
-    return co.data.astype(np.float64), co.wcs, header
+    """Read an exact native pixel rectangle, preserving the delivered PSF."""
+    hdul_ctx, _ = _open_mosaic(tile["s3"], mosaic_cache_dir)
+    with hdul_ctx as hdul:
+        for hdu in hdul:
+            if getattr(hdu, "shape", None) is None or len(hdu.shape) != 2:
+                continue
+            wcs = WCS(hdu.header)
+            cx, cy = wcs.world_to_pixel_values(ra, dec)
+            scale = proj_plane_pixel_scales(wcs) * 3600.0
+            shape = tuple(max(1, int(round(size_arcsec / p))) for p in scale[::-1])
+            try:
+                slices, _ = overlap_slices(hdu.shape, shape,
+                                           (float(cy), float(cx)), mode="strict")
+            except (PartialOverlapError, NoOverlapError) as exc:
+                raise _TileCoverageError(
+                    f"Requested cutout extends beyond MER tile {tile.get('tile_id')}. "
+                    "Use a smaller field or separate tile fits. Resampling multiple "
+                    "tiles also requires transforming their PSFs and noise model."
+                ) from exc
+            data = np.asarray(hdu.section[slices]).copy()
+            header = hdu.header.copy()
+            header["MERTILE"] = str(tile["tile_id"])
+            header["NATIVE"] = (True, "Native MER pixels; no extra resampling")
+            return data, wcs.slice(slices), header
+    raise ValueError(f"No 2D image in MER tile {tile.get('tile_id')}")
 
 
-def _stitched_cutout(tiles, ra, dec, size_arcsec, mosaic_cache_dir):
-    # Mean coadd. For the RMS layer this under-weights (never over-weights)
-    # tile-overlap strips.
-    inputs = []
-    sample_ps_deg = sample_ctype = sample_header = None
-    for t in tiles:
-        result = _read_tile_partial(t, ra, dec, size_arcsec, mosaic_cache_dir)
-        if result is None:
-            continue
-        data, wcs, header = result
-        inputs.append((data, wcs))
-        if sample_ps_deg is None:
-            sample_ps_deg = abs(wcs.pixel_scale_matrix[0, 0])
-            sample_ctype = list(wcs.wcs.ctype)
-            sample_header = header
-    if not inputs:
-        raise ValueError("no tiles overlap the cutout")
-    out_wcs, size_pix = _build_output_wcs(
-        ra, dec, size_arcsec, sample_ps_deg, sample_ctype)
-    out_data, _ = reproject_and_coadd(
-        inputs, out_wcs, shape_out=(size_pix, size_pix),
-        reproject_function=reproject_interp,
-        match_background=False, combine_function="mean",
-    )
-    return np.nan_to_num(out_data, nan=0.0).astype(np.float64), out_wcs, sample_header
+def _matching_tile(product, tile_id):
+    for tile in product.get("tiles") or [product]:
+        if tile.get("tile_id") == tile_id:
+            return tile
+    raise ValueError(f"No matching product for science tile {tile_id}")
 
 
-def _stitched_flag_cutout(tiles, ra, dec, size_arcsec, mosaic_cache_dir):
-    """Stitch a multi-tile FLG cutout: nearest-neighbor resample plus
-    bitwise OR (bilinear blending would corrupt the bitmask)."""
-    inputs = []
-    sample_ps_deg = sample_ctype = sample_header = None
-    for t in tiles:
-        result = _read_tile_partial(t, ra, dec, size_arcsec, mosaic_cache_dir)
-        if result is None:
-            continue
-        data, wcs, header = result
-        inputs.append((data, wcs))
-        if sample_ps_deg is None:
-            sample_ps_deg = abs(wcs.pixel_scale_matrix[0, 0])
-            sample_ctype = list(wcs.wcs.ctype)
-            sample_header = header
-    if not inputs:
-        raise ValueError("no tiles overlap the cutout")
-    out_wcs, size_pix = _build_output_wcs(
-        ra, dec, size_arcsec, sample_ps_deg, sample_ctype)
-    out_bits = np.zeros((size_pix, size_pix), dtype=np.int32)
-    for data, wcs in inputs:
-        arr, footprint = reproject_interp(
-            (data.astype(np.float64), wcs), out_wcs,
-            shape_out=(size_pix, size_pix), order="nearest-neighbor")
-        covered = (footprint > 0) & np.isfinite(arr)
-        out_bits[covered] |= np.rint(arr[covered]).astype(np.int32)
-    return out_bits, out_wcs, sample_header
+def _check_alignment(data, wcs, other, other_wcs):
+    if data.shape != other.shape or not wcs.wcs.compare(other_wcs.wcs, tolerance=1e-10):
+        raise ValueError("Science, RMS and flag planes must share the native pixel grid")
 
 
 def _cutout_cache_path(band, ra, dec, size_arcsec, data_dir, ptype="science"):
     # The sparse FLG bitmask shrinks ~5x under gzip; science/RMS images
     # do not compress.
     ext = "fits.gz" if ptype == "flag" else "fits"
-    fname = f"{band.lower()}_{ptype}_{ra:.4f}_{dec:.4f}_{int(round(size_arcsec))}.{ext}"
+    fname = (f"{band.lower()}_{ptype}_{ra:.8f}_{dec:.8f}_{size_arcsec:.4f}"
+             f"_native-v1.{ext}")
     return Path(data_dir) / fname
 
 
@@ -305,7 +239,7 @@ def _write_cutout_fits(path: Path, data: np.ndarray, wcs: WCS, header: fits.Head
     path.parent.mkdir(parents=True, exist_ok=True)
     hdr = wcs.to_header()
     for key in ("MAGZERO", "MAGZP", "TELESCOP", "INSTRUME", "FILTER",
-                "BUNIT", "EXPTIME", "TIMESYS", "DATE-OBS"):
+                "BUNIT", "EXPTIME", "TIMESYS", "DATE-OBS", "MERTILE", "NATIVE"):
         if key in header:
             hdr[key] = header[key]
     # Write to a temp file first, then rename, so an interrupted run never
@@ -330,14 +264,12 @@ def _write_mask_fits(path: Path, mask: np.ndarray, wcs: WCS, header: fits.Header
     so the temp name preserves the suffix."""
     path.parent.mkdir(parents=True, exist_ok=True)
     hdr = wcs.to_header()
+    for key in ("MERTILE", "NATIVE"):
+        if key in header:
+            hdr[key] = header[key]
     tmp = path.with_name(path.stem + ".tmp" + path.suffix)
     fits.PrimaryHDU(data=mask.astype(np.int32), header=hdr).writeto(tmp, overwrite=True)
     tmp.replace(path)
-
-
-def _read_mask_fits(path: Path) -> np.ndarray:
-    with fits.open(path) as hdul:
-        return np.nan_to_num(hdul[0].data, nan=0).astype(np.int32)
 
 
 def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
@@ -349,7 +281,14 @@ def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
                  with_rms: bool = True,
                  with_flag: bool = False) -> Cutout:
     """Fetch a single-band cutout, reading the local FITS cache when present
-    and otherwise downloading from S3 (and caching the result).
+    and otherwise downloading native pixels from S3 (and caching the result).
+
+    Try the primary MER tile, then other candidate tiles if it cannot
+    contain the rectangle. Science, RMS and flags come from that one tile.
+    Pass the returned header's MERTILE to the PSF extractor as tile_id.
+    No additional resampling is applied. Fields that cannot fit in any
+    candidate tile raise an error; fit them as separate tiles.
+    Versioned cache names prevent reuse of earlier resampled cutouts.
 
     Parameters
     ----------
@@ -387,8 +326,17 @@ def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
         data, wcs, header = _read_cutout_fits(sci_cache)
         rms = None
         if with_rms:
-            rms, _, _ = _read_cutout_fits(rms_cache)
-        flag = _read_mask_fits(flag_cache) if with_flag else None
+            rms, rms_wcs, rms_header = _read_cutout_fits(rms_cache)
+            _check_alignment(data, wcs, rms, rms_wcs)
+            if header.get("MERTILE") != rms_header.get("MERTILE"):
+                raise ValueError("Cached science and RMS come from different tiles")
+        flag = None
+        if with_flag:
+            flag_data, flag_wcs, flag_header = _read_cutout_fits(flag_cache)
+            _check_alignment(data, wcs, flag_data, flag_wcs)
+            if header.get("MERTILE") != flag_header.get("MERTILE"):
+                raise ValueError("Cached science and flags come from different tiles")
+            flag = flag_data.astype(np.int32)
         return Cutout(band=band, data=data, rms=rms, wcs=wcs, header=header,
                       flag=flag)
 
@@ -399,44 +347,53 @@ def fetch_cutout(band: str, ra: float, dec: float, size_arcsec: float,
     if band not in products or "science" not in products[band]:
         raise ValueError(f"no science tile available for band {band!r}")
 
-    sci_tiles = products[band]["science"].get("tiles") or [products[band]["science"]]
-    data, wcs, header = (
-        _single_tile_cutout(sci_tiles[0], ra, dec, size_arcsec, mosaic_cache_dir)
-        if len(sci_tiles) == 1
-        else _stitched_cutout(sci_tiles, ra, dec, size_arcsec, mosaic_cache_dir)
-    )
-    _write_cutout_fits(sci_cache, data, wcs, header)
+    science_tile = products[band]["science"]
+    candidates = [science_tile] + [
+        t for t in science_tile.get("tiles", [])
+        if t["tile_id"] != science_tile["tile_id"]]
+    for candidate in candidates:
+        try:
+            data, wcs, header = _single_tile_cutout(
+                candidate, ra, dec, size_arcsec, mosaic_cache_dir)
+        except _TileCoverageError:
+            continue
+        science_tile = candidate
+        break
+    else:
+        raise ValueError(
+            "No candidate MER tile contains this cutout. Use a smaller field "
+            "or separate tile fits; automatic resampling is not performed.")
+    tile_id = science_tile["tile_id"]
 
     rms = None
-    if with_rms and "rms" in products[band]:
-        rms_tiles = products[band]["rms"].get("tiles") or [products[band]["rms"]]
-        rms, _, _ = (
-            _single_tile_cutout(rms_tiles[0], ra, dec, size_arcsec, mosaic_cache_dir)
-            if len(rms_tiles) == 1
-            else _stitched_cutout(rms_tiles, ra, dec, size_arcsec, mosaic_cache_dir)
-        )
-        _write_cutout_fits(rms_cache, rms, wcs, header)
+    if with_rms:
+        if "rms" not in products[band]:
+            raise ValueError(f"No RMS product available for band {band!r}")
+        tile = _matching_tile(products[band]["rms"], tile_id)
+        rms, rms_wcs, _ = _single_tile_cutout(
+            tile, ra, dec, size_arcsec, mosaic_cache_dir)
+        _check_alignment(data, wcs, rms, rms_wcs)
 
     flag = None
     if with_flag:
-        if "flag" in products.get(band, {}):
-            flag_tiles = (products[band]["flag"].get("tiles")
-                          or [products[band]["flag"]])
-            if len(flag_tiles) == 1:
-                # Single tile: plain pixel copy, no resampling.
-                fdata, _, _ = _single_tile_cutout(
-                    flag_tiles[0], ra, dec, size_arcsec, mosaic_cache_dir)
-                flag = np.rint(fdata).astype(np.int32)
-            else:
-                flag, _, _ = _stitched_flag_cutout(
-                    flag_tiles, ra, dec, size_arcsec, mosaic_cache_dir)
-            _write_mask_fits(flag_cache, flag, wcs, header)
+        if "flag" in products[band]:
+            tile = _matching_tile(products[band]["flag"], tile_id)
+            fdata, flag_wcs, _ = _single_tile_cutout(
+                tile, ra, dec, size_arcsec, mosaic_cache_dir)
+            _check_alignment(data, wcs, fdata, flag_wcs)
+            flag = fdata.astype(np.int32)
         else:
             import warnings
             warnings.warn(
                 f"with_flag=True but no FLG tile is available for band {band!r}; "
                 "returning a cutout with flag=None (no pixel masking).",
                 stacklevel=2)
+
+    _write_cutout_fits(sci_cache, data, wcs, header)
+    if rms is not None:
+        _write_cutout_fits(rms_cache, rms, wcs, header)
+    if flag is not None:
+        _write_mask_fits(flag_cache, flag, wcs, header)
 
     return Cutout(band=band, data=data, rms=rms, wcs=wcs, header=header, flag=flag)
 

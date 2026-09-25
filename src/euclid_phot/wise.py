@@ -4,8 +4,8 @@ Data flow:
 
 1. ``fetch_unwise_cutouts``: download (and cache) the unwise.me tarball,
    extract per-band img/invvar FITS.
-2. ``get_wise_psf``: construct the spatially-correct unWISE PSF via the
-   ``unwise_psf`` library.
+2. ``get_wise_psf``: construct the unWISE PSF at the requested sky position
+   via the ``unwise_psf`` library.
 3. ``fit_wise_forced``: forced photometry at the Euclid source positions
    on a smaller "fit" cutout that contains the sources plus a PSF-wing
    buffer, with a jointly-fit constant sky, an empirical chi-based error
@@ -16,19 +16,21 @@ Method notes. Lang, Hogg & Schlegel (2016) is the canonical reference for
 WISE forced photometry from a higher-resolution prior. Differences here:
 (i) one joint scalar sky is fit (small cutouts retain a residual pedestal);
 (ii) the VIS model classes and shapes are kept, frozen, with flux the only
-free parameter, as for NISP (``source_models="point"`` restores the
-Lang+2016 point-source reduction; the Euclid profiles are unresolved at
-unWISE resolution, so the two agree closely); (iii) the flux errors carry
-an empirical chi inflation (the
-chi scatter on source-sparse pixels, validated against the Schlafly+2019
-``dflux``), where Lang+2016 report formal errors and legacypipe floors the
-per-pixel variance and adds a source-Poisson term.
+free parameter, as for NISP (``source_models="point"`` is an optional
+all-point-source approximation, not a reproduction of Lang+2016's
+model selection); (iii) the flux errors carry
+an empirical chi inflation. This residual-based scale is a heuristic;
+it does not include source-to-source covariance or validate the errors
+of blended objects.
 """
 from __future__ import annotations
 
 import sys
+import hashlib
 import tarfile
+import tempfile
 import urllib.request
+from datetime import datetime, timezone
 from copy import deepcopy as _deepcopy
 from pathlib import Path
 
@@ -37,6 +39,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.nddata import Cutout2D
 from astropy.stats import mad_std
+from astropy.table import Table
 from astropy.wcs import WCS
 from astroquery.ipac.irsa import Irsa
 from tractor import (
@@ -64,8 +67,8 @@ def vega_mag_to_ujy(mag_vega, band: str):
     """Convert a WISE Vega magnitude to AB microJansky.
 
     Accepts scalar or array input. The Vega -> AB offsets are
-    ``W1 = 2.699``, ``W2 = 3.339`` (Lang 2014 / Schlafly+2019, the
-    convention used by unWISE and CatWISE2020).
+    ``W1 = 2.699``, ``W2 = 3.339`` (Jarrett et al. 2011, the convention
+    used by unWISE and CatWISE2020).
 
     m_AB = m_Vega + Vega_offset[band]; f_uJy = 3.631 * 10**((22.5 - m_AB) / 2.5).
     """
@@ -73,70 +76,52 @@ def vega_mag_to_ujy(mag_vega, band: str):
     return _UJY_PER_NMGY * 10.0 ** ((22.5 - m_ab) / 2.5)
 
 
-def query_catwise2020(ra: float, dec: float, radius_arcsec: float):
-    """Pull the CatWISE2020 catalog inside ``radius_arcsec`` of (ra, dec).
-
-    Returns an astropy Table with columns ``ra``, ``dec``, ``ra_pm``,
-    ``dec_pm`` (proper-motion-corrected positions), ``w1mpro_pm`` /
-    ``w2mpro_pm`` (Vega magnitudes from the proper-motion-aware fit),
-    their errors, and derived ``w1_ujy`` / ``w2_ujy`` AB-microJansky
-    columns ready to compare against ``fit_wise_forced``.
-
-    Catalog: Marocco et al. 2021 ApJS 253 8. The IRSA table is
-    ``catwise_2020``. The Vega -> AB offsets used here (W1=2.699,
-    W2=3.339; Lang 2014 / Schlafly+2019) match the unWISE convention;
-    they differ from Wright+2010 AllWISE by ~0.02 mag and are the right
-    choice when comparing to forced photometry on unWISE coadds.
-    """
-    import math
-    for name, val in (("ra", ra), ("dec", dec), ("radius_arcsec", radius_arcsec)):
-        if not math.isfinite(val):
-            raise ValueError(f"{name} must be finite, got {val!r}")
-    if radius_arcsec <= 0:
-        raise ValueError(f"radius_arcsec must be positive, got {radius_arcsec}")
-
-    radius_deg = radius_arcsec / 3600.0
-    adql = f"""
-    SELECT ra, dec, ra_pm, dec_pm,
-           w1mpro_pm, w1sigmpro_pm,
-           w2mpro_pm, w2sigmpro_pm,
-           w1nm, w2nm
-    FROM catwise_2020
-    WHERE CONTAINS(POINT('J2000', ra, dec),
-                   CIRCLE('J2000', {float(ra)}, {float(dec)}, {radius_deg}))=1
-    """
+def _query_unwise_table(adql, *, cache_dir=DEFAULT_WISE_CACHE_DIR / "catalogs"):
+    """Cache the exact public query so archive outages cannot change the scene."""
+    query = " ".join(adql.split())
+    path = None
+    if cache_dir is not None:
+        key = hashlib.sha256(query.encode()).hexdigest()
+        path = Path(cache_dir) / f"unwise_2019_{key}.ecsv"
+        if path.exists():
+            cat = Table.read(path)
+            if cat.meta.get("irsa_query") != query:
+                raise ValueError(f"unWISE query cache provenance mismatch: {path}")
+            return cat
     from .netutils import retry
     cat = retry(lambda: Irsa.query_tap(query=adql).to_table(),
-                what="IRSA TAP CatWISE query")
-
-    # np.asarray on a MaskedColumn substitutes the ~1e20 fill value;
-    # force masked -> NaN.
-    def _col_to_nan(col):
-        if hasattr(col, "filled"):
-            return np.asarray(col.filled(np.nan), dtype=float)
-        return np.asarray(col, dtype=float)
-
-    w1mag = _col_to_nan(cat["w1mpro_pm"])
-    w2mag = _col_to_nan(cat["w2mpro_pm"])
-    cat["w1_ujy"] = np.where(np.isfinite(w1mag),
-                              vega_mag_to_ujy(w1mag, "W1"), np.nan)
-    cat["w2_ujy"] = np.where(np.isfinite(w2mag),
-                              vega_mag_to_ujy(w2mag, "W2"), np.nan)
+                what="IRSA TAP unWISE query")
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cat.meta["irsa_query"] = query
+        cat.meta["irsa_endpoint"] = "https://irsa.ipac.caltech.edu/TAP"
+        cat.meta["retrieved_utc"] = datetime.now(timezone.utc).isoformat()
+        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".ecsv", delete=False) as f:
+            temporary = Path(f.name)
+        try:
+            cat.write(temporary, format="ascii.ecsv", overwrite=True)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
     return cat
 
 
-def query_unwise_2019(ra: float, dec: float, radius_arcsec: float):
+def query_unwise_2019(ra: float, dec: float, radius_arcsec: float, *,
+                      cache_dir=DEFAULT_WISE_CACHE_DIR / "catalogs"):
     """Pull the unWISE catalog (Schlafly et al. 2019) inside a sky circle.
 
-    The natural comparison reference for ``fit_wise_forced``: Schlafly+2019
-    used simultaneous PSF fitting (crowdsource), the same algorithm class
-    as Tractor, though on earlier-epoch coadds than neo7.
+    An external comparison for ``fit_wise_forced``. Schlafly+2019 used
+    simultaneous point-source fitting (crowdsource), with different
+    source lists, PSF normalization, and earlier-epoch coadds than neo7.
 
     The IRSA TAP table is ``unwise_2019``. Fluxes are stored in Vega
     nanomaggies (``flux_1`` for W1, ``flux_2`` for W2) and converted to AB
-    microJansky via the Lang 2014 / Schlafly+2019 Vega offsets (W1=2.699,
-    W2=3.339) and 3.631 microJy = 1 AB nanomaggy. Source-quality cut:
-    ``primary_1 = 1`` (the canonical deduplicated detection).
+    microJansky via the Jarrett et al. 2011 Vega offsets (W1=2.699,
+    W2=3.339) and 3.631 microJy = 1 AB nanomaggy. Primary detections
+    in either band are included; primary status removes tile duplicates
+    and does not certify photometric quality. Apply per-band validity
+    and quality cuts when comparing fluxes.
+    Successful queries are cached in ``cache_dir``; use ``None`` to disable caching.
 
     Returns
     -------
@@ -161,11 +146,9 @@ def query_unwise_2019(ra: float, dec: float, radius_arcsec: float):
     FROM unwise_2019
     WHERE CONTAINS(POINT('J2000', ra, dec),
                    CIRCLE('J2000', {float(ra)}, {float(dec)}, {radius_deg}))=1
-      AND primary_1 = 1
+      AND (primary_1 = 1 OR primary_2 = 1)
     """
-    from .netutils import retry
-    cat = retry(lambda: Irsa.query_tap(query=adql).to_table(),
-                what="IRSA TAP unWISE query")
+    cat = _query_unwise_table(adql, cache_dir=cache_dir)
 
     def _col(col):
         return np.asarray(
@@ -191,13 +174,13 @@ def select_isolated_sources(ra, dec, flux,
                             *,
                             radius_arcsec: float | None = None,
                             flux_fraction: float = 1.0 / 3.0):
-    """Bright-neighbor isolation cut for clean external-comparison samples.
+    """Bright-neighbor isolation criterion in a supplied reference band.
 
     Returns a boolean mask, True where a source has no neighbor within
-    ``radius_arcsec`` whose flux exceeds ``flux_fraction`` of its own: at
-    the 6.94" WISE FWHM a bright neighbor within ~2 FWHM blends into the
-    target and corrupts both the forced and the catalog flux. (Lang+2016
-    instead compare only unique positional matches within 4".)
+    ``radius_arcsec`` whose flux exceeds ``flux_fraction`` of its own.
+    The default radius is twice a representative WISE FWHM. This is a
+    sample-selection choice, not a guarantee of unbiased photometry.
+    VIS-based isolation does not imply isolation in WISE.
 
     Parameters
     ----------
@@ -205,7 +188,7 @@ def select_isolated_sources(ra, dec, flux,
         Source positions (e.g. the Euclid/MER prior positions).
     flux : array-like
         Per-source flux used for the brightness-ratio test (any consistent
-        unit; VIS flux is the natural choice since it defines the prior).
+        unit; the band defines which neighbours count as bright).
     radius_arcsec : float, optional
         Neighbor search radius. Defaults to ``2 * 6.94" = 13.88"`` (two
         WISE FWHM).
@@ -256,14 +239,28 @@ def _unwise_cutout_url(ra: float, dec: float, size_pix: int,
     )
 
 
+def _unwise_wcs(header) -> WCS:
+    """Read celestial WCS without treating unWISE's epoch index as an equinox.
+
+    In unWISE headers ``EPOCH`` identifies the time-slice product (``-1``
+    for a full-depth coadd). The FITS WCS reader otherwise treats this
+    keyword as the obsolete celestial equinox keyword and can infer FK4.
+    Preserve the delivered header and any explicit celestial frame cards.
+    """
+    celestial_header = header.copy()
+    celestial_header.pop("EPOCH", None)
+    return WCS(celestial_header)
+
+
 def _fetch_unwise_mask_tile(coadd_id: str, version: str,
                             ref_wcs: WCS, ref_shape, cache_dir: Path):
     """Fetch the unWISE 31-bit bitmask for ``coadd_id`` and resample it onto the
     cutout grid (``ref_wcs`` / ``ref_shape``).
 
     Pulls the per-tile ``-msk.fits.gz`` from the coadd archive (~90 kB
-    gzipped, a static Meisner 2018 product shared across NEO epochs) and
-    reprojects it nearest-neighbor. Returns an int32 array shaped like the
+    gzipped, a static product shared across NEO epochs; Meisner et al.
+    2019, PASP 131, 124504) and reprojects it nearest-neighbor. Returns an
+    int32 array shaped like the
     cutout, or None if the tile is unavailable (masking is then skipped).
     """
     from reproject import reproject_interp
@@ -285,7 +282,7 @@ def _fetch_unwise_mask_tile(coadd_id: str, version: str,
             tmp.replace(local)
         with fits.open(local) as hdul:
             mdata = hdul[0].data.astype(np.float64)
-            mwcs = WCS(hdul[0].header)
+            mwcs = _unwise_wcs(hdul[0].header)
         arr, footprint = reproject_interp(
             (mdata, mwcs), ref_wcs, shape_out=tuple(ref_shape),
             order="nearest-neighbor")
@@ -296,12 +293,12 @@ def _fetch_unwise_mask_tile(coadd_id: str, version: str,
         return None
 
 
-# unWISE bitmask groups (Meisner 2018, 31 bits). The default drops spike,
-# halo, and ghost pixels; the broad near-bright-star bits (0-3) and latent
-# bits (13-20) flag large, mostly recoverable areas and stay unset.
+# unWISE bitmask groups (Meisner et al. 2019, PASP 131, 124504, Table 2).
+# The default drops spike, halo, and ghost pixels; the broad near-bright-star
+# bits (0-3) and latent bits (13-20) flag large, mostly recoverable areas and
+# stay unset.
 def _UNWISE_BIT(*bits):
     return sum(1 << b for b in bits)
-
 
 
 UNWISE_SPIKE_BITS = _UNWISE_BIT(27, 28, 29, 30)
@@ -418,7 +415,7 @@ def fetch_unwise_cutouts(ra: float, dec: float, size_arcsec: float,
         with fits.open(img_path) as hdul:
             data = hdul[0].data.astype(np.float32)
             header = hdul[0].header.copy()
-            wcs = WCS(hdul[0].header)
+            wcs = _unwise_wcs(hdul[0].header)
         with fits.open(iv_path) as hdul:
             ivar = hdul[0].data.astype(np.float32)
         if ref_wcs is None:
@@ -436,21 +433,27 @@ def fetch_unwise_cutouts(ra: float, dec: float, size_arcsec: float,
 
 
 def get_wise_psf(band_number: int, coadd_id: str, *, sidelen: int = 151,
-                 modelname: str | None = None) -> np.ndarray:
+                 modelname: str | None = None,
+                 ra: float | None = None, dec: float | None = None) -> np.ndarray:
     """Return a unit-flux-normalized unWISE PSF stamp.
 
     ``unwise_psf.get_unwise_psf`` has a Python-3 slice-indexing bug when
     ``sidelen`` is passed; we trim ourselves to an odd stamp.
 
-    ``modelname`` defaults to the model matched to ``WISE_COADD_VERSION``
-    (``"neo7_unwisecat"``), which beats the version-agnostic default on the
-    demo field: median(Tractor/Schlafly+2019) on bright isolated sources
-    moves from 0.975 to 0.990 in W1 and 0.85 to 0.95 in W2. The per-frame
-    rotation path overshoots W1 by ~4%, and legacypipe's W1 fluxrescale
-    (x1.04) pushes the ratio away from unity; neither is used. The residual
-    few-percent W1/W2 scale uncertainty is inherent to the unWISE PSF model
-    near the NEP.
+    ``modelname`` defaults to the model named for ``WISE_COADD_VERSION``
+    (``"neo7_unwisecat"`` for neo7). An unavailable named model triggers
+    a warning before using the library default. Unit normalization does
+    not establish agreement with an external catalogue's flux scale.
+
+    Supply ``ra`` and ``dec`` together to evaluate the library's scan-angle
+    prescription at the field position. Without them, use the coadd centre.
+    A single field-centre stamp still approximates variation across the field.
     """
+    if (ra is None) != (dec is None):
+        raise ValueError("Supply both ra and dec, or neither.")
+    if ra is not None and (not np.isfinite(ra) or not np.isfinite(dec)
+                           or not -90 <= dec <= 90):
+        raise ValueError("PSF coordinates must be finite with -90 <= dec <= 90.")
     try:
         from unwise_psf import unwise_psf as up
     except ImportError as exc:
@@ -465,6 +468,17 @@ def get_wise_psf(band_number: int, coadd_id: str, *, sidelen: int = 151,
         ) from exc
     if modelname is None:
         modelname = f"{WISE_COADD_VERSION}_unwisecat"
+
+    def at_position(name):
+        if ra is None:
+            return up.get_unwise_psf(band_number, coadd_id, modelname=name)
+        suffix = f"_{name}" if name else ""
+        path = up.get_resource_filename(
+            "unwise_psf", f"data/psf_model_w{band_number}{suffix}.fits")
+        model = fits.getdata(path)
+        model = up.average_two_scandirs(model)
+        return up.rotate_using_rd(model, coadd_id, ra=float(ra), dec=float(dec))
+
     import warnings
     fallback = False
     # unwise_psf hits the deprecated pkg_resources API when resolving a
@@ -472,11 +486,11 @@ def get_wise_psf(band_number: int, coadd_id: str, *, sidelen: int = 151,
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*pkg_resources.*")
         try:
-            full = up.get_unwise_psf(band_number, coadd_id, modelname=modelname)
+            full = at_position(modelname)
         except OSError:
             # *_unwisecat models exist only for some versions/bands.
             fallback = True
-            full = up.get_unwise_psf(band_number, coadd_id)
+            full = at_position("")
     if fallback:
         warnings.warn(
             f"unwise_psf has no '{modelname}' model for W{band_number}; "
@@ -498,10 +512,9 @@ def _source_at_wise(vis_src, band: str, *, point: bool = False,
 
     The VIS model class and shape are kept (positions and shapes frozen;
     flux is the only free parameter), so the same light profile is
-    measured in every band. ``point=True`` collapses the source to a
-    PointSource instead, the Lang+2016 (section 3.2) reduction; every
-    Euclid source is unresolved at the ~6.9 arcsec WISE PSF (~30x a
-    typical Euclid R_eff), so the two choices agree closely.
+    measured in every band. ``point=True`` substitutes a PointSource.
+    Even sub-PSF differences in the assumed profiles can redistribute
+    flux between close neighbours.
 
     Profile sources carry an explicit ``halfsize`` covering the PSF
     stamp: Tractor sizes a galaxy's FFT patch from this hint, and the
@@ -532,15 +545,17 @@ def _supplement_sources(ra: float, dec: float,
                         *,
                         field_halfwidth_arcsec: float,
                         buffer_halfwidth_arcsec: float,
-                        merge_sep_arcsec: float = 3.0):
+                        merge_sep_arcsec: float = 3.0,
+                        prior_cutout=None,
+                        catalog_cache_dir=DEFAULT_WISE_CACHE_DIR / "catalogs"):
     """Pull unWISE-catalog sources in the PSF-wing buffer outside the Euclid
-    target box (but inside the WISE fit box), excluding any within
+    footprint (but inside the WISE buffer), excluding any within
     ``merge_sep_arcsec`` of an existing Euclid source.
 
-    Supplements inside the MER footprint can absorb W1/W2 flux that belongs
-    to a MER prior (a detection 4-10 arcsec from a MER galaxy may be a
-    sub-threshold counterpart or a confused blend), so they are used only in
-    the buffer.
+    With ``prior_cutout``, the footprint follows its WCS and the default
+    one-pixel margin used by ``trim_catalog_to_cutout``. Without it, an
+    axis-aligned sky square is used. Interior candidates are excluded
+    because some may be blends or substructure of existing priors.
     """
     # Circle must reach the square buffer's corners.
     query_radius_arcsec = buffer_halfwidth_arcsec * np.sqrt(2.0) + merge_sep_arcsec
@@ -555,9 +570,7 @@ def _supplement_sources(ra: float, dec: float,
                    CIRCLE('J2000',{ra},{dec},{query_radius_deg}))=1
       AND (primary_1 = 1 OR primary_2 = 1)
     """
-    from .netutils import retry
-    uw_cat = retry(lambda: Irsa.query_tap(query=adql).to_table(),
-                   what="IRSA TAP unWISE isolation query")
+    uw_cat = _query_unwise_table(adql, cache_dir=catalog_cache_dir)
     if len(uw_cat) == 0:
         return uw_cat, np.zeros(0, dtype=bool)
     # TAP row order is non-deterministic, and a near-degenerate LSQR solve
@@ -572,7 +585,13 @@ def _supplement_sources(ra: float, dec: float,
     dx = np.abs(dra) * np.cos(np.radians(dec)) * 3600.0
     dy = np.abs(uw_dec - dec) * 3600.0
     inside_buffer = (dx <= buffer_halfwidth_arcsec) & (dy <= buffer_halfwidth_arcsec)
-    inside_field = (dx <= field_halfwidth_arcsec) & (dy <= field_halfwidth_arcsec)
+    if prior_cutout is None:
+        inside_field = (dx <= field_halfwidth_arcsec) & (dy <= field_halfwidth_arcsec)
+    else:
+        height, width = prior_cutout.shape
+        px, py = prior_cutout.wcs.world_to_pixel_values(uw_ra, uw_dec)
+        inside_field = ((px >= 1) & (px < width - 1)
+                        & (py >= 1) & (py < height - 1))
     keep = inside_buffer & ~inside_field
     if len(existing_coords) > 0:
         for k in np.nonzero(keep)[0]:
@@ -584,12 +603,15 @@ def _supplement_sources(ra: float, dec: float,
 def fit_wise_forced(sources, wise_cutouts: dict, *,
                     ra: float, dec: float,
                     cutout_size_arcsec: float,
+                    prior_cutout=None,
                     psf_stamps: dict | None = None,
                     bands=("W1", "W2"),
                     source_models: str = "prior",
                     supplement_with_unwise_catalog: bool = True,
+                    catalog_cache_dir=DEFAULT_WISE_CACHE_DIR / "catalogs",
                     inflate_uncertainties: bool = True,
-                    mask_bad_bits: int | None = UNWISE_BAD_BITS) -> dict:
+                    mask_bad_bits: int | None = UNWISE_BAD_BITS,
+                    return_model_state: bool = False) -> dict:
     """Forced photometry on W1/W2 at the Euclid positions, with a jointly-fit
     constant sky.
 
@@ -598,17 +620,28 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
     sources : list of VIS-fitted Tractor sources.
     wise_cutouts : output of ``fetch_unwise_cutouts``.
     ra, dec, cutout_size_arcsec : geometry of the Euclid field.
-    psf_stamps : optional dict[band] -> stamp; built via ``get_wise_psf`` if missing.
+    prior_cutout : optional prior-band Cutout, providing ``wcs`` and ``shape``.
+        Use its native footprint to select outside-prior catalogue sources,
+        matching the default one-pixel catalogue trimming margin. Without
+        it, the footprint is approximated by a square in sky coordinates.
+    psf_stamps : optional dict[band] -> stamp; built via ``get_wise_psf`` at
+        the field centre if missing.
     source_models : {'prior', 'point'}
         ``'prior'`` keeps each VIS-fitted model class and shape, frozen,
         with flux the only free parameter, the same treatment as the NISP
-        bands. ``'point'`` collapses every source to a PointSource
-        (Lang et al. 2016, section 3.2); at the ~6.9 arcsec WISE PSF the
-        Euclid profiles are unresolved, so the two agree closely.
+        bands. ``'point'`` collapses every source to a PointSource.
+        This approximation can change blended fluxes even when the
+        intrinsic profiles are smaller than the WISE PSF.
     supplement_with_unwise_catalog : whether to add outside-prior point sources.
+        When requested, an unavailable catalogue raises an error before fitting.
+        Set False only to deliberately fit without the additional neighbours.
+    catalog_cache_dir : exact-query cache for the outside-prior catalogue.
+        Set None to disable caching.
     inflate_uncertainties : whether to scale the formal flux errors by the
                             chi scatter on source-sparse pixels (see the
                             module docstring).
+    return_model_state : retain the fitted image and source models for
+        component plots. Does not run any extra fit.
 
     Returns
     -------
@@ -617,11 +650,11 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
 
     Notes
     -----
-    The chi-inflated ``flux_err_ujy`` reproduces the Schlafly+2019
-    statistical errors in W1 to ~10% (median sigma ratio 1.1) on the demo
-    field, but the W2 errors come out ~1.8x smaller than Schlafly's: the
-    sky-floor chi inflation underestimates the W2 confusion noise. Treat W2
-    uncertainties as a lower bound.
+    ``R.IV`` supplies template information diagonals, not the inverse of
+    the full source-and-sky covariance matrix. Thus ``flux_err_ujy`` omits
+    blend covariance even after residual scaling. The scaling pool uses
+    the source model after subtracting the fitted sky; it is an empirical
+    diagnostic, not a validated uncertainty model for crowded WISE data.
     """
     if source_models not in ("prior", "point"):
         raise ValueError(
@@ -630,8 +663,8 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
     coadd_id = wise_cutouts["coadd_id"]
     if psf_stamps is None:
         psf_stamps = {
-            "W1": get_wise_psf(1, coadd_id),
-            "W2": get_wise_psf(2, coadd_id),
+            "W1": get_wise_psf(1, coadd_id, ra=ra, dec=dec),
+            "W2": get_wise_psf(2, coadd_id, ra=ra, dec=dec),
         }
 
     # Pad by 5x WISE FWHM per edge so edge sources keep their PSF wings
@@ -652,16 +685,15 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
                 ra, dec, src_coord,
                 field_halfwidth_arcsec=cutout_size_arcsec / 2.0,
                 buffer_halfwidth_arcsec=fit_size_arcsec / 2.0
-                + 4 * _WISE_FWHM_ARCSEC)
+                + 4 * _WISE_FWHM_ARCSEC,
+                prior_cutout=prior_cutout,
+                catalog_cache_dir=catalog_cache_dir)
         except Exception as exc:
-            # Supplements only absorb buffer-ring wing flux; a transient
-            # IRSA outage must not kill the W1/W2 measurement.
-            import warnings
-            warnings.warn(
-                f"unwise_2019 supplement query failed ({exc!r}); fitting "
-                "without buffer-ring supplements. Edge-source W1/W2 fluxes "
-                "may absorb a little neighboring wing flux.", stacklevel=2)
-            suppl_cat = suppl_mask = None
+            raise RuntimeError(
+                "Required unWISE neighbour catalogue unavailable. Restore its "
+                "query cache or retry with archive access. No WISE fit was run. "
+                "Use supplement_with_unwise_catalog=False only if omitting "
+                "outside-prior sources is intentional.") from exc
 
     results: dict = {}
     n_euclid = len(sources)
@@ -680,6 +712,10 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
         data = co_d.data.astype(np.float32)
         ivar = co_iv.data.astype(np.float32)
         wcs_fit = co_d.wcs
+
+        valid = np.isfinite(data) & np.isfinite(ivar) & (ivar > 0)
+        data = np.where(valid, data, 0.0).astype(np.float32)
+        ivar = np.where(valid, ivar, 0.0).astype(np.float32)
 
         # Zero the invvar on bright-star artifact pixels; skipped when the
         # cached tarball predates the mask.
@@ -727,7 +763,9 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
                 ps.freezeAllBut("brightness")
                 band_sources.append(ps)
 
-        tr = Tractor([tim], band_sources)
+        from .wise_solver import WiseFluxOptimizer
+        optimizer = WiseFluxOptimizer()
+        tr = Tractor([tim], band_sources, optimizer=optimizer)
         tim.freezeAllParams()
         tim.thawParam("sky")
         R = tr.optimize_forced_photometry(
@@ -754,19 +792,15 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
         _, mod, _, chi, _ = R.ims1[0]
         with np.errstate(all="ignore"):
             sig_pix = np.where(ivar > 0, 1.0 / np.sqrt(ivar), np.inf)
-        # Chi-inflation pool: pixels where the joint model (sources + sky)
-        # is within mult*sigma of zero, relaxing mult until >= min_pool
-        # pixels; crowded fields fall back to a sigma-clipped MAD. Pooling
-        # on |mod - sky| instead doubles the factor (W1 sigma ratio vs
-        # Schlafly+2019: ~1.1 here, ~2.1 sky-subtracted).
+        source_model = mod - sky_value
         min_pool = 50
         chi_pool = None
         chi_pool_kind = None
         for mult in (1.0, 2.0, 3.0, 5.0):
-            mask = (np.abs(mod) < mult * sig_pix) & (ivar > 0)
+            mask = (np.abs(source_model) < mult * sig_pix) & (ivar > 0)
             if mask.sum() >= min_pool:
                 chi_pool = chi[mask]
-                chi_pool_kind = f"source-sparse (|mod|<{mult:g}sigma)"
+                chi_pool_kind = f"source-sparse (|model-sky|<{mult:g}sigma)"
                 break
         if chi_pool is None:
             from astropy.stats import sigma_clip
@@ -790,6 +824,12 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
         flux_ujy = fluxes_ab[:n_euclid] * _UJY_PER_NMGY
         flux_err_ujy = flux_err_ab[:n_euclid] * _UJY_PER_NMGY
 
+        stamp = np.asarray(psf_stamps[band], dtype=float)
+        py, px = np.array(stamp.shape) // 2
+        total_psf = float(stamp.sum())
+        central_psf = float(stamp[max(0, py - 9):py + 10,
+                                  max(0, px - 9):px + 10].sum())
+
         results[band] = {
             "flux_ujy": flux_ujy,
             "flux_err_ujy": flux_err_ujy,
@@ -797,10 +837,22 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
             "chi_inflation": chi_infl,
             "chi_pool_kind": chi_pool_kind,
             "n_chi_pool": int(chi_pool.size),
+            "n_supplement_sources": len(band_sources) - n_euclid,
+            "supplement_status": "included" if supplement_with_unwise_catalog else "disabled",
+            "solver": optimizer.diagnostics,
+            "psf_normalization": {
+                "stamp_shape": list(stamp.shape),
+                "stamp_sum": total_psf,
+                "central_19_sum": central_psf,
+                "central_19_fraction": central_psf / total_psf,
+            },
             "residual": data - mod,
             "model": mod,
             "data": data,
             "invvar": ivar,
             "wcs": wcs_fit,
         }
+        if return_model_state:
+            results[band]["fit_image"] = tim
+            results[band]["fit_sources"] = band_sources
     return results

@@ -4,7 +4,7 @@ Adds m_corrected = m_observed - R_band * E(B-V) with ``R_band`` from
 :data:`euclid_phot.config.EXTINCTION_COEFF`. E(B-V) comes from the MER
 per-source ``gal_ebv`` column (Planck R1.20) when available, else one IRSA
 dust-service field value (:func:`query_ebv`, cached on disk); gradients are
-negligible at arcminute scales. Flux columns stay observed-frame; corrected
+not resolved by the single field fallback. Flux columns stay observed-frame; corrected
 magnitudes, ``ebv``, and per-band ``a_<band>_mag`` are added alongside.
 """
 from __future__ import annotations
@@ -106,8 +106,12 @@ def add_extinction_columns(tab, ebv, *, ebv_source: str = ""):
     tab.meta["extinction"] = {
         "law": ("Gordon et al. 2023 at Euclid effective wavelengths, "
                 "R_V = 3.1 (config.EXTINCTION_COEFF); "
-                "Yuan, Liu & Xiang 2013 for W1/W2"),
+                "Yuan, Liu & Xiang 2013 Table 2, third-column empirical "
+                "coefficients for W1/W2"),
         "ebv_source": ebv_source or "caller-supplied",
+        "limitations": ("Approximate foreground screen with fixed coefficients; "
+                        "does not propagate extinction-law or dust-map uncertainty. "
+                        "The full dust column is not appropriate for every foreground star."),
         "convention": ("flux columns are OBSERVED-frame; "
                        "mag_<band>_ab_extcorr = mag_<band>_ab - "
                        "R_band * E(B-V)"),

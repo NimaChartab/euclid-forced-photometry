@@ -7,7 +7,7 @@ ApJS 269, 20; Figures 3-4) onto the Tractor machinery used here.
 ``sufficient_thresh`` = 1.5 is the paper's chi^2_N bad-fit criterion;
 ``simplegalaxy_radius`` (0.30 arcsec), ``simplegalaxy_penalty`` (0.05) and
 ``exp_dev_similar_thresh`` (0.15) are Euclid tunings of the Farmer values
-(0.45, 0.1, 0.1).
+(0.45, 0.1, 0.2).
 
 Deviations from Farmer: positions are frozen during the tree, with a hard
 ``max_pos_shift_arcsec`` clamp at the final joint re-fit; every source takes
@@ -64,18 +64,13 @@ EUCLID_DEFAULTS = dict(
     blob_dilate_pix=4,
     max_steps=50,
     dlnp_crit=1e-3,
-    # Farmer's seed bound (r_e <= 2.7 arcsec) is a COSMOS tuning; a railed
-    # radius leaves a ring residual on large VIS galaxies, so use the same
-    # 20 arcsec guard models.py applies to MER-seeded shapes.
+    # A railed radius leaves a ring residual on large VIS galaxies, so use
+    # the same 20 arcsec guard models.py applies to MER-seeded shapes.
     max_re_arcsec=20.0,
-    # Every tier evaluated, lowest reduced chi-squared wins. The published
-    # first-sufficient shortcut biases faint fluxes ~7% low on the demo
-    # field (median Tractor/MER 0.93 vs 0.99 at segment S/N < 20).
+    # Every tier evaluated, lowest reduced chi-squared wins; the published
+    # first-sufficient shortcut biases faint fluxes low.
     full_ladder=True,
     full_ladder_min_snr=0.0,
-    # Off by default: residual/chi maps are rendered through one PSF, so
-    # per-blob-stamp fits read as extra chi (field chi std 0.65 -> 0.71)
-    # even though the fits themselves are better.
     per_source_psf=False,
     # Guarded SersicGalaxy 6th tier (extension beyond published Farmer);
     # on by default: accepted only when it lowers the total chi-squared on
@@ -191,9 +186,8 @@ def _seed_shape_from_sep(sep_row: dict, pixscale_arcsec: float,
                          max_re_arcsec: float | None = None) -> EllipseESoft:
     """Build an initial Tractor shape from a SEP detection row.
 
-    Mirrors Farmer's seeding except the radius cap: Farmer bounds
-    log(r_eff) in [-5, 1] (r_eff <= 2.72 arcsec, a COSMOS tuning); the
-    upper bound here defaults to ``EUCLID_DEFAULTS['max_re_arcsec']``.
+    Mirrors Farmer's seeding; the radius cap defaults to
+    ``EUCLID_DEFAULTS['max_re_arcsec']``.
     """
     a = max(float(sep_row["a"]), 0.5)
     b = max(float(sep_row["b"]), 0.5)
@@ -243,6 +237,7 @@ def _make_masked_image(tim: Image, footprint: np.ndarray, psf=None,
         invvar[~footprint[y0:y1, x0:x1]] = 0.0
         data = tim.getImage()[y0:y1, x0:x1]
         wcs = tim.getWcs().shifted(x0, y0)
+        psf_obj = psf_obj.getShifted(x0, y0)
     new_tim = Image(
         data=data,
         invvar=invvar,
@@ -270,8 +265,7 @@ def _count_free_params(source) -> int:
     """Number of currently-thawed Tractor parameters on a source.
 
     A static per-class count would overcount the dof by 1-2 in stages where
-    pos is frozen, biasing the reduced chi^2 by 1-4% (Weaver et al. 2023,
-    eq. 5).
+    pos is frozen, biasing the reduced chi^2.
     """
     try:
         n = int(source.numberOfParams())
@@ -464,18 +458,23 @@ class ModelSelector:
         :class:`History` instance when ``history=True``, otherwise ``None``.
 
         ``psf_stamp`` (HxW float array) overrides ``tim_vis``'s PSF for this
-        blob; pass the CATALOG-PSF stamp of the brightest member to remove
-        the averaged-PSF bias on the bright source.
+        blob. This is an explicit constant-PSF approximation for all its
+        members; omit it to retain the image's spatial PSF.
 
-        ``psf_by_member`` (dict[mer_idx -> stamp]) is taken in preference to
-        ``psf_stamp``; the stamp of the brightest member of ``blob`` is used.
+        ``psf_by_member`` (dict[mer_idx -> stamp]) supplies local samples
+        for a spatial PSF. Each member uses its own nearest sample while
+        all members remain in the joint fit. ``psf_stamp`` explicitly
+        overrides this with a constant PSF when supplied.
         """
+        member_psf = None
         if psf_by_member is not None and psf_stamp is None:
-            brightest = max(blob.member_mer_indices,
-                            key=lambda i: float(mer_cat[i]["flux_vis_sersic"]))
-            psf_stamp = (psf_by_member.get(brightest)
-                         if isinstance(psf_by_member, dict)
-                         else psf_by_member[brightest])
+            from .spatial_psf import SpatialPixelizedPSF
+            members = list(blob.member_mer_indices)
+            member_psf = SpatialPixelizedPSF({
+                'stamps': np.stack([psf_by_member[i] for i in members]),
+                'ra': np.array([float(mer_cat[i]['ra']) for i in members]),
+                'dec': np.array([float(mer_cat[i]['dec']) for i in members]),
+            }, tim_vis.getWcs())
 
         # Fit on the blob bounding box (identical likelihood, much cheaper
         # rendering); the history path keeps the full frame because
@@ -493,7 +492,8 @@ class ModelSelector:
             tim_blob = _make_masked_image(tim_vis, blob.footprint,
                                           psf=blob_psf, bbox=bbox)
         else:
-            tim_blob = _make_masked_image(tim_vis, blob.footprint, bbox=bbox)
+            tim_blob = _make_masked_image(tim_vis, blob.footprint,
+                                          psf=member_psf, bbox=bbox)
         idx_list = list(blob.member_mer_indices)
         hist = History(blob_id=blob.blob_id, members=idx_list) if history else None
 
@@ -765,9 +765,9 @@ class ModelSelector:
                     src.freezeParam("shape")
             self._optimize(tractor_final)
 
-        # Clamp runaway centroids back to the MER prior (2/57 sources moved
-        # ~2 px on the demo field) and re-fit flux-only; runs last so no
-        # later refit reintroduces drift past the cap.
+        # Clamp runaway centroids back to the MER prior and re-fit
+        # flux-only; runs last so no later refit reintroduces drift past
+        # the cap.
         self._clamp_positions(tractor_final, all_sources_final, idx_list,
                               mer_cat)
 
@@ -869,9 +869,8 @@ class ModelSelector:
             prev_chi2 = prev_tot / max(npix_eval - n_free_prev, 1)
 
             # Two starts, n=1 and n=4: the Sersic likelihood is bimodal for
-            # a disk+core galaxy (an n=4 seed chases the core to n=6.1 on
-            # the demo field). Each start gets a fresh seed shape since the
-            # first fit mutates it.
+            # a disk+core galaxy. Each start gets a fresh seed shape since
+            # the first fit mutates it.
             saved = all_sources_final[pos_in_list]
             best = None   # (total chi2, reduced chi2, segment chi2, source, n)
 
@@ -1065,7 +1064,7 @@ def detect_blobs(
     config. The deblend and grouping defaults are the SExtractor/SEP
     defaults plus a 4-pixel dilation, gentler than Farmer's shipped values
     (``DEBLEND_CONT=1e-10``, ``DEBLEND_NTHRESH=256``, 0.2" dilation), which
-    over-split this field.
+    over-split Euclid VIS blends.
     """
     import sep
     from scipy import ndimage
@@ -1147,6 +1146,14 @@ def assign_mer_to_blobs(mer_cat, blobs: list[Blob], wcs) -> list[Blob]:
     blob are dropped; sources inside a blob but outside any SEP segment are
     attached to the geometrically nearest SEP segment in that blob.
     """
+    projected = []
+    if blobs:
+        for mer_idx, row in enumerate(mer_cat):
+            try:
+                px, py = wcs.positionToPixel(RaDecPos(float(row["ra"]), float(row["dec"])))
+            except Exception:
+                continue
+            projected.append((mer_idx, px, py))
     assigned: list[Blob] = []
     for blob in blobs:
         mer_indices = []
@@ -1154,11 +1161,7 @@ def assign_mer_to_blobs(mer_cat, blobs: list[Blob], wcs) -> list[Blob]:
         new_sep_rows: dict[int, dict] = {}
         sep_labels = list(blob.segments.keys())  # original 0-based SEP indices
 
-        for mer_idx, row in enumerate(mer_cat):
-            try:
-                px, py = wcs.positionToPixel(RaDecPos(float(row["ra"]), float(row["dec"])))
-            except Exception:
-                continue
+        for mer_idx, px, py in projected:
             xi, yi = int(round(px)), int(round(py))
             H, W = blob.footprint.shape
             if not (0 <= yi < H and 0 <= xi < W):
@@ -1198,6 +1201,81 @@ def assign_mer_to_blobs(mer_cat, blobs: list[Blob], wcs) -> list[Blob]:
             sep_rows=new_sep_rows,
         ))
     return assigned
+
+
+def unlisted_sep_detections(mer_cat, tim_vis, vis_data, vis_invvar, *,
+                            min_separation_pix: float = 3.0,
+                            min_snr: float = 5.0,
+                            mask_margin_pix: int = 3,
+                            **detect_kwargs) -> dict:
+    """SEP detections that share a blob with a catalog row but match none.
+
+    Runs the same detection and assignment as :func:`run_model_selection`.
+    Inside every blob that contains at least one ``mer_cat`` row, the SEP
+    segments no row was attached to are returned as candidate neighbours;
+    blobs without a catalog row are ignored. A candidate is skipped when it
+    lies closer than ``min_separation_pix`` to a catalog row, when its
+    segment flux is below ``min_snr`` times the pixel noise summed in
+    quadrature over the segment, or when the segment comes within
+    ``mask_margin_pix`` of a zero-weight pixel (bright-star mask, flagged
+    or missing data), where detections are treated as the masked object's
+    light.
+
+    Returns a dict of arrays: ``ra``, ``dec`` (deg), ``flux`` (SEP
+    isophotal flux in image counts), ``snr``, ``x``, ``y`` (pixels).
+    """
+    from scipy import ndimage
+
+    blobs_raw, _, _ = detect_blobs(vis_data, vis_invvar, **detect_kwargs)
+    wcs = tim_vis.getWcs()
+    finite_iv = vis_invvar[np.isfinite(vis_invvar) & (vis_invvar > 0)]
+    iv_floor = float(np.median(finite_iv)) * 1e-6 if finite_iv.size else 0.0
+    good = np.isfinite(vis_invvar) & (vis_invvar > iv_floor)
+    near_mask = ~good
+    if mask_margin_pix > 0 and near_mask.any():
+        near_mask = ndimage.binary_dilation(
+            near_mask, iterations=int(mask_margin_pix))
+    assigned = {b.blob_id: b for b in assign_mer_to_blobs(mer_cat, blobs_raw, wcs)}
+    listed = []
+    for row in mer_cat:
+        try:
+            listed.append(wcs.positionToPixel(
+                RaDecPos(float(row["ra"]), float(row["dec"]))))
+        except Exception:
+            continue
+    listed = np.asarray(listed, dtype=float).reshape(-1, 2)
+
+    out = {k: [] for k in ("ra", "dec", "flux", "snr", "x", "y")}
+    for raw in blobs_raw:
+        blob = assigned.get(raw.blob_id)
+        if blob is None:
+            continue
+        # assign_mer_to_blobs re-keys the segment arrays without copying
+        # them, so identity tells which SEP segments received a row.
+        taken = {id(seg) for seg in blob.segments.values()}
+        for label, seg in raw.segments.items():
+            if id(seg) in taken:
+                continue
+            sep_row = raw.sep_rows[label]
+            x, y = float(sep_row["x"]), float(sep_row["y"])
+            if listed.size and np.hypot(listed[:, 0] - x,
+                                        listed[:, 1] - y).min() < min_separation_pix:
+                continue
+            if np.any(seg & near_mask):
+                continue
+            pix = seg & good
+            noise = float(np.sqrt(np.sum(1.0 / vis_invvar[pix]))) if pix.any() else np.inf
+            snr = float(sep_row["flux"]) / noise if noise > 0 else 0.0
+            if not snr >= min_snr:
+                continue
+            pos = wcs.pixelToPosition(x, y)
+            out["ra"].append(float(pos.ra))
+            out["dec"].append(float(pos.dec))
+            out["flux"].append(float(sep_row["flux"]))
+            out["snr"].append(snr)
+            out["x"].append(x)
+            out["y"].append(y)
+    return {k: np.asarray(v, dtype=float) for k, v in out.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -1286,20 +1364,15 @@ def run_model_selection(
     blobs_raw, segmap, _ = detect_blobs(vis_data, vis_invvar, **detect_kwargs)
     blobs = assign_mer_to_blobs(mer_cat, blobs_raw, tim_vis.getWcs())
 
-    # fit_blob picks the stamp of each blob's brightest member.
     psf_by_member = None
     if (psf_data is not None and selector.per_source_psf
+            and not getattr(tim_vis.getPsf(), 'is_spatial', False)
             and psf_data.get("stamps") is not None
             and len(psf_data["stamps"]) > 0):
-        from .psf import get_psf_for_source
-        psf_by_member = {}
-        for _i, _row in enumerate(mer_cat):
-            try:
-                _stamp, _, _ = get_psf_for_source(
-                    psf_data, float(_row["ra"]), float(_row["dec"]))
-                psf_by_member[_i] = _stamp
-            except Exception:
-                continue
+        from .spatial_psf import SpatialPixelizedPSF
+        tim_vis = _make_masked_image(
+            tim_vis, np.ones(tim_vis.shape, dtype=bool),
+            psf=SpatialPixelizedPSF(psf_data, tim_vis.getWcs()))
 
     sources_list: list[object | None] = [None] * len(mer_cat)
     counts = {name: 0 for name in MODEL_NAMES}
@@ -1449,4 +1522,3 @@ def reproduce_figure3(
     if save_path is not None:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig, axes
-

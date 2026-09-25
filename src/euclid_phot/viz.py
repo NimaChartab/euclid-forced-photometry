@@ -10,8 +10,8 @@ def plot_workflow(ax=None, *, save_path=None):
     """Draw the forced-photometry pipeline as a labeled flow diagram.
 
     Five phases, left to right: archive inputs, source-model
-    construction, the two-step prior fit on VIS, forced photometry on
-    the target bands, and the calibrated multi-band catalog. Pass
+    construction, the prior fit on VIS, forced photometry on
+    the target bands, and the multi-band catalog. Pass
     ``save_path`` to write a PNG.
     """
     from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
@@ -52,14 +52,13 @@ def plot_workflow(ax=None, *, save_path=None):
 
     header(4.35, "Source models")
     box(3.25, 1.85, 2.2, 2.5, "Two choices",
-        "positions: MER catalog\nor user coordinates\n\n"
-        "models: catalog priors or\nchi-squared decision\ntree on SEP blobs", c_mod)
+        "MER positions\n\n"
+        "catalog models or\nVIS model-selection tree", c_mod)
 
     header(7.15, "Prior fit (VIS)")
-    box(6.05, 3.20, 2.2, 1.35, "Step 1: fluxes",
-        "linear solve, all sources;\nbright-star pixels masked", c_fit)
-    box(6.05, 1.55, 2.2, 1.35, "Step 2: shapes",
-        "bounded refit of interior\ngalaxies; positions fixed", c_fit)
+    box(6.05, 1.55, 2.2, 3.0, "VIS fit",
+        "profiles and positions\nfrom the selected mode;\n"
+        "joint source fluxes;\nmasked pixels excluded", c_fit)
 
     header(9.95, "Forced photometry")
     box(8.85, 3.20, 2.2, 1.35, "NISP Y/J/H",
@@ -69,14 +68,13 @@ def plot_workflow(ax=None, *, save_path=None):
 
     header(12.4, "Catalog")
     box(11.65, 1.55, 2.1, 3.0, "Per-object table",
-        "fluxes + AB magnitudes;\nerrors calibrated at\nsource-free "
-        "positions;\nE(B-V)-corrected mags;\nquality + blend flags;\n"
-        "5-sigma depths", c_out)
+        "fluxes + AB magnitudes;\nestimated errors;\n"
+        "foreground corrections;\nquality + blend flags;\n"
+        "error summaries", c_out)
 
     for y in (4.55, 2.90, 1.25):
         arrow(2.65, y, 3.25, 3.10)
     arrow(5.45, 3.10, 6.05, 3.85)
-    arrow(7.15, 3.20, 7.15, 2.92)
     arrow(8.25, 2.55, 8.85, 3.70)
     arrow(8.25, 2.20, 8.85, 2.20)
     arrow(11.05, 3.90, 11.65, 3.40)
@@ -222,52 +220,6 @@ def show_chi_map(data, model, invvar, *,
     return ax, info
 
 
-def show_psf_stamps(psf_data: dict, *, pixel_scale_arcsec: dict | None = None,
-                    log_floor: float = 1e-5, axes=None):
-    """Gallery of field-average PSF stamps, one panel per band.
-
-    ``psf_data`` maps band name to the dict returned by
-    :func:`euclid_phot.psf.extract_catalog_psf` or
-    :func:`euclid_phot.psf.extract_grid_psf`. Each panel shows the
-    field-average stamp on a logarithmic stretch (normalized to the peak,
-    floored at ``log_floor``) with the median FWHM and the number of stamps
-    annotated. Pass ``pixel_scale_arcsec`` (band -> arcsec/pixel) to label
-    the axes in arcsec; the Euclid Q1 MER mosaics, and the PSF stamps drawn
-    from them, share a common 0.1 arcsec/pix grid across VIS and NISP.
-
-    Returns the array of axes.
-    """
-    from .psf import psf_summary
-
-    bands = list(psf_data)
-    if axes is None:
-        _, axes = plt.subplots(1, len(bands),
-                               figsize=(2.8 * len(bands), 3.1))
-    axes = np.atleast_1d(axes)
-    for ax, band in zip(axes, bands, strict=True):
-        stamp, fwhm = psf_summary(psf_data[band])
-        stamp = np.asarray(stamp, float)
-        n = stamp.shape[0]
-        norm = stamp / stamp.max()
-        extent = None
-        if pixel_scale_arcsec and band in pixel_scale_arcsec:
-            half = 0.5 * n * pixel_scale_arcsec[band]
-            extent = [-half, half, -half, half]
-        ax.imshow(np.log10(np.maximum(norm, log_floor)), origin="lower",
-                  cmap="magma", vmin=np.log10(log_floor), vmax=0,
-                  extent=extent)
-        nstamp = len(psf_data[band].get("stamps", []))
-        ax.set_title(f"{band}: FWHM = {fwhm:.2f}\"  (n={nstamp})",
-                     fontsize=13)
-        if extent is not None:
-            ax.set_xlabel("arcsec")
-            if ax is axes[0]:
-                ax.set_ylabel("arcsec")
-        else:
-            ax.set_xticks([]); ax.set_yticks([])
-    return axes
-
-
 def show_psf_grid(grid: dict, *, cutout=None, mer_cat=None,
                   n_examples: int = 3, log_floor: float = 1e-5):
     """Spatial layout and variation of a PSF-stamp extraction.
@@ -354,33 +306,6 @@ _WAVELENGTHS_UM = {"VIS": 0.71, "Y": 1.08, "J": 1.37, "H": 1.77,
                    "W1": 3.368, "W2": 4.618}
 
 
-def show_sed(fluxes_ujy: dict, errors_ujy: dict | None = None,
-             *, ax=None, label: str | None = None,
-             marker: str = "o", linestyle: str = "-"):
-    """Plot a single source's SED (flux vs effective wavelength).
-
-    ``fluxes_ujy`` is a dict like ``{'VIS': 12.3, 'Y': 14.1, ...}``.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 4))
-    bands = [b for b, v in fluxes_ujy.items()
-             if v is not None and np.isfinite(v) and v > 0
-             and b in _WAVELENGTHS_UM]
-    wl = [_WAVELENGTHS_UM[b] for b in bands]
-    fl = [fluxes_ujy[b] for b in bands]
-    err = (None if errors_ujy is None
-           else [errors_ujy.get(b, 0.0) for b in bands])
-    ax.errorbar(wl, fl, yerr=err, fmt=marker, linestyle=linestyle,
-                ms=8, label=label)
-    ax.set_xlabel("Wavelength (micron)")
-    ax.set_ylabel("Flux (microJansky)")
-    ax.set_yscale("log")
-    ax.grid(True, alpha=0.3)
-    if label is not None:
-        ax.legend(fontsize=12)
-    return ax
-
-
 def show_error_calibration(calib: dict, *, ax=None):
     """Histogram of the empty-position flux/error ratios behind a calibration.
 
@@ -435,10 +360,10 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
 
     A log-density hexbin of ``-2.5 log10(flux/ref)`` against the reference
     AB magnitude, with the running median, the +/- NMAD band, and (when the
-    two pipelines' errors are given) the scatter expected from the reported
-    errors, all in equal-population magnitude bins. The NMAD tracking the
-    expected curve at the faint end shows the growth of the scatter is the
-    photon noise itself.
+    two pipelines' errors are given) an independent-error reference scale,
+    all in equal-population magnitude bins. Shared data can correlate the
+    measurements; agreement with this curve does not establish noise-only
+    scatter or calibrated uncertainties.
 
     Parameters
     ----------
@@ -446,7 +371,7 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
         Reference and measured fluxes (microJansky), aligned.
     err_ujy, ref_err_ujy : ndarray, optional
         The two pipelines' 1-sigma flux errors; both are needed for the
-        expected-scatter curve.
+        independent-error reference curve.
     sel : ndarray of bool, optional
         Points entering the hexbin and the binned statistics. Defaults to
         every position where both fluxes are finite and positive.
@@ -522,7 +447,7 @@ def show_dmag_vs_mag(ref_ujy, flux_ujy, *,
     ax.fill_between(ctr, med - nmad, med + nmad, color="k", alpha=0.15,
                     label="+/- NMAD")
     if pvals is not None and np.isfinite(prd).any():
-        ax.plot(ctr, prd, "r:", lw=1.5, label="expected from errors")
+        ax.plot(ctr, prd, "r:", lw=1.5, label="independent-error reference")
         ax.plot(ctr, -prd, "r:", lw=1.5)
     ax.axhline(0, color="r", ls="--", lw=1)
     ax.set_xlabel(xlabel)

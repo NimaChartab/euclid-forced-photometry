@@ -1,40 +1,25 @@
-# Working caches the engine may write at runtime
-/data/
-**/_cache/
-
-# Runtime data cache: fields beyond the shipped 200-arcsec demo download
-# from IRSA/S3 on first use (README, "Data and caching"). The shipped demo
-# files are already tracked, so this rule only hides new downloads; use
-# `git add -f` to deliberately ship another field.
+# Downloaded inputs and generated catalogs
+examples/native_data/
 examples/data/
-
-# Python
+data/
+outputs/
+notebooks/*.ecsv
+notebooks/*.csv
+notebooks/supporting_notebooks/*.ecsv
+notebooks/supporting_notebooks/*.csv
+# Local environments, build products, and notebook scratch files
+.venv/
+venv/
+.anet/
+.unwise_psf/
 __pycache__/
 *.py[cod]
 *.egg-info/
 build/
 dist/
-.venv/
-venv/
-
-# Jupyter
 .ipynb_checkpoints/
-
-# Linters
-.ruff_cache/
-.mypy_cache/
-
-# Editor / OS
 .DS_Store
-.vscode/
-.idea/
-
-# Local Claude Code settings
-.claude/settings.local.json
-
-# Catalog written by notebook 01 section 21
-*.ecsv
-
-# Vendored GitHub installs
-.anet/
-.unwise_psf/
+.pytest_cache/
+.ruff_cache/
+/photometry.csv
+/photometry.ecsv

@@ -22,7 +22,8 @@ def flag_sources(ra, dec, fluxes_ujy, is_star, *,
                  neighbor_radius_arcsec: float = 6.0,
                  core_radius_pix: int = 3,
                  edge_margin_pix: int = 10,
-                 flag_bad_bits=_USE_DEFAULT_BAD_BITS) -> Table:
+                 flag_bad_bits=_USE_DEFAULT_BAD_BITS,
+                 pixel_mask=None) -> Table:
     """Compute per-source quality flags.
 
     Parameters
@@ -35,9 +36,10 @@ def flag_sources(ra, dec, fluxes_ujy, is_star, *,
     is_star : array-like of bool
         Star/galaxy classification (e.g. the MER ``is_star`` column).
     wcs, flag_plane : optional
-        The cutout WCS and the MER FLG bitmask. When both are given, a source
-        is flagged ``masked`` if any pixel within ``core_radius_pix`` of its
-        center is set in the flag plane.
+        The cutout WCS and the MER FLG bitmask. With a WCS, a source is
+        flagged ``masked`` if any pixel within ``core_radius_pix`` of its
+        center is set in the flag plane or in ``pixel_mask`` (the boolean
+        mask of pixels given zero weight in the fit).
     shape : tuple, optional
         Cutout shape ``(H, W)`` for the ``edge`` flag; defaults to
         ``flag_plane.shape`` when a flag plane is given.
@@ -82,11 +84,16 @@ def flag_sources(ra, dec, fluxes_ujy, is_star, *,
         near_bright_star = (sep.arcsec < neighbor_radius_arcsec) & ~bright_star
 
     masked = np.zeros(n, dtype=bool)
-    if wcs is not None and flag_plane is not None:
+    bad = None
+    if flag_plane is not None:
         fp = np.asarray(flag_plane)
-        H, W = fp.shape
         bits = MER_VIS_BAD_BITS if flag_bad_bits is _USE_DEFAULT_BAD_BITS else flag_bad_bits
         bad = (fp != 0) if bits is None else ((fp & int(bits)) != 0)
+    if pixel_mask is not None:
+        pm = np.asarray(pixel_mask, dtype=bool)
+        bad = pm if bad is None else (bad | pm)
+    if wcs is not None and bad is not None:
+        H, W = bad.shape
         r = int(core_radius_pix)
         for i in range(n):
             px, py = wcs.world_to_pixel_values(ra[i], dec[i])
@@ -123,8 +130,8 @@ def blend_flags(ra, dec, fluxes_ujy, *,
                 profile_re_arcsec=None) -> Table:
     """Per-source blending / crowding flags.
 
-    The exported errors are the diagonal of the joint covariance, which
-    understates the uncertainty of strongly covariant (blended) pairs;
+    The exported conditional errors omit off-diagonal information in the
+    normal matrix, understating uncertainty in strongly blended pairs;
     these flags mark the affected rows.
 
     Parameters
@@ -202,8 +209,8 @@ def probable_bright_stars(mer_cat) -> np.ndarray:
     ``point_like_prob > 0.96``, plus abstained rows (masked
     ``point_like_prob``, which includes the brightest stars) where
     ``flux_vis_psf >= flux_vis_sersic``: a point source's PSF-model flux
-    captures essentially all its light (ratio ~3 on the demo field's bright
-    stars) while an extended galaxy's is core-only (ratio ~0.1-0.6).
+    captures essentially all its light while an extended galaxy's is
+    core-only.
 
     Returns a bool array aligned with ``mer_cat``; pass to
     :func:`bright_star_pixel_mask` with ``flux_vis_psf`` as the brightness.
@@ -243,6 +250,9 @@ def starsignal_pixel_mask(cutout) -> np.ndarray | None:
     ``fetch_cutout(..., with_flag=True)``); ``bright_star_pixel_mask``
     below is the geometric fallback for that case.
     """
+    if str(cutout.band).upper() != "VIS":
+        raise ValueError("STARSIGNAL is a VIS flag; NISP bit 18 is GHOST, "
+                         "not a bright-star footprint")
     flag_plane = getattr(cutout, "flag", None)
     if flag_plane is None:
         return None

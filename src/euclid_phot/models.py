@@ -30,7 +30,24 @@ def _row_value(row, col, default=None):
     val = row[col]
     if hasattr(val, "mask") and np.ma.is_masked(val):
         return default
-    return float(val)
+    val = float(val)
+    return val if np.isfinite(val) else default
+
+
+def _configure_shape_steps(shape):
+    """Use local derivatives for Tractor's radius/axis-ratio representation.
+
+    GalaxyShape otherwise inherits unit steps: +1 arcsec and +1 in b/a.
+    Those secants are not useful derivatives of compact Euclid galaxies.
+    EllipseE/ESoft supply their own step sizes and are left unchanged.
+    """
+    if isinstance(shape, GalaxyShape):
+        shape.setStepSizes([max(0.001, 0.01 * abs(float(shape.re))), 0.01, 1.0])
+    return shape
+
+
+def _galaxy_shape(re, ab, phi):
+    return _configure_shape_steps(GalaxyShape(re, ab, phi))
 
 
 def build_sources_from_mer(mer_cat, *, band: str = "VIS",
@@ -97,7 +114,7 @@ def build_sources_from_mer(mer_cat, *, band: str = "VIS",
                 semimaj_pix * pixel_scale_arcsec
             re_seed = max(0.05, min(re_seed if re_seed > 0 else 0.3, 20.0))
             ab_seed = max(0.05, min(ab if ab is not None else 1.0, 1.0))
-            shape = GalaxyShape(re_seed, ab_seed, -(pa or 0.0))
+            shape = _galaxy_shape(re_seed, ab_seed, -(pa or 0.0))
             if force_model == "sersic":
                 n_val = max(SERSIC_N_MIN,
                             min(n if n is not None else 1.0, SERSIC_N_MAX))
@@ -121,7 +138,7 @@ def build_sources_from_mer(mer_cat, *, band: str = "VIS",
                 sources.append(PointSource(pos, brightness)); continue
             re_clipped = max(0.05, min(re, 20.0))
             ab_clipped = max(0.05, min(ab if ab is not None else 1.0, 1.0))
-            shape = GalaxyShape(re_clipped, ab_clipped, -(pa or 0.0))
+            shape = _galaxy_shape(re_clipped, ab_clipped, -(pa or 0.0))
             n_val = n if n is not None else 1.0
             n_clipped = max(SERSIC_N_MIN, min(n_val, SERSIC_N_MAX))
             sources.append(
@@ -137,7 +154,7 @@ def build_sources_from_mer(mer_cat, *, band: str = "VIS",
         ecc = _row_value(row, "ellipticity", 0.0) or 0.0
         ab_iso = max(0.05, 1.0 - ecc)
         re_iso = max(0.05, min(semimaj, 20.0))
-        shape = GalaxyShape(re_iso, ab_iso,
+        shape = _galaxy_shape(re_iso, ab_iso,
                             -(_row_value(row, "position_angle", 0.0) or 0.0))
         sources.append(ExpGalaxy(pos, brightness, shape))
     return sources
@@ -198,7 +215,7 @@ def build_sources_from_coords(ra, dec, *, band: str = "VIS",
             re_i = _per_source(re_arcsec, 0.3)[i]
             ab_i = _per_source(axis_ratio, 1.0)[i]
             pa_i = _per_source(position_angle_deg, 0.0)[i]
-            shape = GalaxyShape(max(0.05, min(re_i, 20.0)),
+            shape = _galaxy_shape(max(0.05, min(re_i, 20.0)),
                                 max(0.05, min(ab_i, 1.0)), -pa_i)
             if model == "sersic":
                 n_i = _per_source(sersic_n, 1.0)[i]

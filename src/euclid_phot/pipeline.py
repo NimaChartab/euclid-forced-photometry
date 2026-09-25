@@ -11,8 +11,8 @@ Euclid and WISE bands to propagate to. The prior band is removed from
 ``target_bands["euclid"]`` if present. WISE forced photometry freezes each
 source's VIS position and shape, fitting flux only, exactly as for NISP;
 ``source_models="point"`` instead collapses every source to a
-``PointSource`` (Lang et al. 2016, sec 3.2), valid because every Euclid
-R_eff is unresolved at the ~6.9 arcsec WISE PSF.
+``PointSource`` (Lang et al. 2016, Sect. 2; Schlafly et al. 2019,
+Sect. 6.8), valid because every Euclid R_eff is unresolved at the WISE PSF.
 """
 from __future__ import annotations
 
@@ -28,13 +28,12 @@ from .fit import (
     fit_forced_photometry,
     fit_free_shapes,
     refine_positions,
-    refit_fluxes_persource_psf,
 )
 from .images import build_tractor_image
 from .models import build_sources_from_coords, build_sources_from_mer
 from .nisp import fit_nisp_forced
 from .psf import extract_catalog_psf, extract_grid_psf, psf_summary
-from .selection import run_model_selection
+from .selection import run_model_selection, unlisted_sep_detections
 from .wise import fetch_unwise_cutouts, fit_wise_forced, get_wise_psf
 
 _UJY_PER_NMGY = 3.631
@@ -121,7 +120,7 @@ def _normalize_prior(prior: dict | None, *,
     if p["objects"] == "free":
         # The tree fits each blob's shapes with the bounded optimizer and
         # freezes them (Weaver et al. 2023, sec 3.4.1); an unbounded re-thaw
-        # pushed fitted radii past the bounds on the demo field.
+        # can push fitted radii past the bounds.
         p["free_shapes"] = False
     if p["objects"] == "free" and p["band"] != "VIS":
         # The ladder builds NanoMaggies(VIS=...) throughout (selection.py),
@@ -277,6 +276,29 @@ def _synthetic_mer_from_coords(parsed: dict, flux_col: str):
     return tab
 
 
+def _drop_neighbour_rows(result, n_keep: int) -> None:
+    """Move rows beyond ``n_keep`` (the SEP neighbours appended on the
+    user-coordinates tree path) out of every per-source array and into
+    ``result.neighbour_sources``."""
+    n_total = len(result.sources)
+    result.neighbour_sources = list(result.sources[n_keep:])
+    result.neighbour_fluxes_ujy = {
+        b: np.asarray(v)[n_keep:] for b, v in result.fluxes_ujy.items()}
+    result.sources = list(result.sources[:n_keep])
+    result.mer_cat = result.mer_cat[:n_keep]
+    for d in (result.fluxes_ujy, result.flux_errs_ujy):
+        for b in list(d):
+            d[b] = np.asarray(d[b])[:n_keep]
+    if result.flux_quality is not None:
+        result.flux_quality = np.asarray(result.flux_quality)[:n_keep]
+    if result.chosen_models is not None:
+        result.chosen_models = list(result.chosen_models[:n_keep])
+    for r in (result.wise_results or {}).values():
+        for key in ("flux_ujy", "flux_err_ujy"):
+            if key in r and len(r[key]) == n_total:
+                r[key] = np.asarray(r[key])[:n_keep]
+
+
 def _drop_coords_outside_cutout(parsed: dict, wcs, shape, *, margin_pix: int = 1):
     """Drop user coordinates whose pixel position falls outside the cutout.
 
@@ -316,6 +338,7 @@ class ForcedPhotometryResult:
     cutouts: dict = field(default_factory=dict)        # band -> Cutout
     psf_data: dict = field(default_factory=dict)
     psf_stamps: dict = field(default_factory=dict)
+    psf_mode: str = 'field-average'
     fluxes_ujy: dict = field(default_factory=dict)        # band -> ndarray
     flux_errs_ujy: dict = field(default_factory=dict)     # band -> ndarray (1-sigma)
     flux_quality: np.ndarray | None = None
@@ -329,6 +352,11 @@ class ForcedPhotometryResult:
     # True = pixel given zero weight in the prior-band fit
     # (mask_bright_stars).
     prior_pixel_mask: np.ndarray | None = None
+    # User-coordinates tree path only: fitted sources for SEP detections
+    # that share a blob with a supplied position. They stay in the model
+    # of every band but are not reported.
+    neighbour_sources: list = field(default_factory=list)
+    neighbour_fluxes_ujy: dict = field(default_factory=dict)   # band -> ndarray
 
     def to_table(self, **kwargs):
         """Assemble the per-object science catalog (astropy Table).
@@ -337,7 +365,9 @@ class ForcedPhotometryResult:
         see that function for the column list and units.
         """
         from .catalog_table import build_catalog
-        return build_catalog(self, **kwargs)
+        table = build_catalog(self, **kwargs)
+        table.meta['psf_mode'] = self.psf_mode
+        return table
 
 
 def run_forced_photometry(
@@ -380,7 +410,8 @@ def run_forced_photometry(
           class per blob that satisfies the fit, with the source list
           kept one-to-one with the input (positions seeded at the input
           coordinates, clamped to 0.3 arcsec; a position with no
-          detectable blob falls back to its prior model); or an explicit
+          detectable blob falls back to its prior model, or to a fixed
+          point source for user coordinates); or an explicit
           Tractor class for every source (``"point"``, ``"sersic"``,
           ``"exp"``, or ``"dev"``), seeded from the catalog shape where
           available and refined in step 2.
@@ -395,7 +426,10 @@ def run_forced_photometry(
         the ladder: ``detect`` (dict of
         :func:`euclid_phot.selection.detect_blobs` keywords, e.g.
         ``{"threshold_sigma": 2.0, "minarea": 8, "deblend_cont": 1e-4,
-        "bkg_box": 32}``) and ``selector`` (a configured
+        "bkg_box": 32}``; with user coordinates also ``min_snr``,
+        ``min_separation_pix`` and ``mask_margin_pix`` of
+        :func:`euclid_phot.selection.unlisted_sep_detections`) and
+        ``selector`` (a configured
         :class:`euclid_phot.selection.ModelSelector`, for the
         chi-squared thresholds). Default ``{"band": "VIS",
         "objects": "mer", "model_selection": "prior",
@@ -408,7 +442,16 @@ def run_forced_photometry(
         entry is read once and applied uniformly to every position (point vs
         sersic for the whole list); per-source shape seeds vary per row. Any
         position that falls outside the fetched cutout is dropped with a
-        warning rather than measured.
+        warning rather than measured. With ``model_selection="tree"``, SEP
+        detections that share a blob with a supplied position but match
+        none of them are added as neighbours when they are at least 5 sigma
+        in their segment and clear of the masked pixels (see
+        :func:`euclid_phot.selection.unlisted_sep_detections`). They are
+        modeled in every band so their light is not absorbed by the listed
+        sources, then removed from the result, so the output stays one row
+        per supplied position. Their fitted sources and per-band fluxes are
+        kept in ``result.neighbour_sources`` and
+        ``result.neighbour_fluxes_ujy``.
     target_bands : dict, optional
         Forced-photometry targets. Keys: ``euclid`` (tuple of Euclid
         band names), ``wise`` (tuple of ``"W1"``/``"W2"`` or empty).
@@ -427,11 +470,11 @@ def run_forced_photometry(
         several threads at once.
     with_flag : bool
         Also fetch the MER FLG (quality) plane for the prior band and zero
-        the inverse variance on coadd-fatal pixels (``MER_VIS_BAD_BITS``)
+        the inverse variance on coadd-fatal pixels (instrument-specific bits)
         before fitting. Off by default: the RMS map already zeroes most of
         these pixels on Q1.
     mask_bright_stars : bool or dict
-        ``True``: zero the inverse variance on the MER STARSIGNAL pixels
+        ``True`` (VIS prior only): zero the inverse variance on the MER STARSIGNAL pixels
         (star footprints, halos and spikes included) before the prior-band
         fit; the NISP mosaics share the prior band's 0.1 arcsec grid, so
         the same pixel veto carries over to the NISP fits, whose own FLG
@@ -443,11 +486,10 @@ def run_forced_photometry(
         the geometric fallback for data without the FLG plane. The applied
         mask is stored as ``result.prior_pixel_mask``.
     persource_psf : bool
-        After the prior-band fit, re-extract the prior-band fluxes using
-        each source's nearest CATALOG-PSF stamp instead of the field-average
-        PSF (default True); this removes the few-percent bias on bright
-        point sources. Shapes are still fit with the field-average PSF. On
-        a large field the grouping is coarsened to a spatial grid.
+        Use the nearest local PSF sample at each source centroid throughout
+        the Euclid fits, including shapes and residual rendering (default
+        True). This is one consistent scene, with no repeated PSF-group
+        refits. False uses a field-average PSF in each Euclid band.
     calibrate_errors : bool
         After the Euclid-band fits, measure the empirical PSF-scale error
         inflation per band (see :mod:`euclid_phot.calibrate`) and scale
@@ -480,6 +522,11 @@ def run_forced_photometry(
             f"psf_product = {psf_product!r}; must be 'auto', 'catalog' or "
             f"'grid'.")
     prior_band = prior["band"]
+    if mask_bright_stars is True and prior_band != "VIS":
+        raise ValueError(
+            "mask_bright_stars=True reads VIS STARSIGNAL footprints and "
+            "requires a VIS prior. For a NISP prior, use False or a dict "
+            "of geometric bright_star_pixel_mask options.")
     flux_col = _MER_FLUX_COL[prior_band]
 
     data_dir = Path(data_dir)
@@ -492,6 +539,7 @@ def run_forced_photometry(
         prior=dict(prior),
         target_bands=dict(target_bands),
         data_dir=data_dir)
+    result.psf_mode = 'nearest-source-position' if persource_psf else 'field-average'
 
     half_size_deg = cutout_size_arcsec / 2.0 / 3600.0
     if mer_catalog is not None and prior["objects"] == "coords":
@@ -620,15 +668,20 @@ def run_forced_photometry(
 
     def _extract_psf(band):
         kw = dict(products=products, radius_arcsec=psf_radius,
+                  tile_id=cutouts[band].header.get("MERTILE"),
                   data_dir=psf_dir, force_download=force_download)
         try:
             pd = _extractors[chosen_product](band, target_ra, target_dec, **kw)
         except Exception as exc:           # product missing / fetch failed
+            if psf_product != "auto":
+                raise
             pd = None
             reason = repr(exc)
         else:
             reason = "no stamps near the target"
         if pd is None or len(pd.get("stamps", ())) == 0:
+            if psf_product != "auto":
+                raise ValueError(f"No {chosen_product.upper()}-PSF stamps for {band}")
             import warnings
             fallback = _other[chosen_product]
             warnings.warn(
@@ -649,9 +702,10 @@ def run_forced_photometry(
     else:
         for band in euclid_bands:
             result.psf_data[band] = _extract_psf(band)
-    for band in euclid_bands:
-        avg, _ = psf_summary(result.psf_data[band])
-        result.psf_stamps[band] = avg
+    if not persource_psf:
+        for band in euclid_bands:
+            avg, _ = psf_summary(result.psf_data[band])
+            result.psf_stamps[band] = avg
 
     if verbose:
         print(f"[5/7] build Tractor image + source models on {prior_band}")
@@ -724,11 +778,46 @@ def run_forced_photometry(
                 print(f"[5a] bright-star pixel mask: {int(star_mask.sum())} "
                       f"pixels ({pct:.2f}%) excluded from the {prior_band} fit")
 
-    tim_prior = build_tractor_image(
-        cutouts[prior_band], result.psf_stamps[prior_band],
-        invvar=prior_invvar)
+    if result.prior_pixel_mask is not None:
+        reference = cutouts[prior_band]
+        for band in target_bands["euclid"]:
+            target = cutouts[band]
+            if (target.shape != reference.shape or not reference.wcs.wcs.compare(
+                    target.wcs.wcs, tolerance=1e-10)):
+                raise ValueError(
+                    "A shared bright-star mask requires aligned native band grids. "
+                    "Fit these tiles separately or construct band-specific masks.")
 
+    tim_prior = build_tractor_image(
+        cutouts[prior_band], result.psf_stamps.get(prior_band),
+        invvar=prior_invvar,
+        psf_data=result.psf_data[prior_band] if persource_psf else None)
+
+    n_report = None
     if prior["objects"] == "free":
+        detect_kw = dict(prior.get("detect") or {})
+        neighbour_kw = {k: detect_kw.pop(k) for k in
+                        ("min_snr", "min_separation_pix", "mask_margin_pix")
+                        if k in detect_kw}
+        if parsed_coords is not None:
+            n_report = len(result.mer_cat)
+            extra = unlisted_sep_detections(
+                result.mer_cat, tim_prior, cutouts[prior_band].data,
+                tim_prior.getInvvar(), **neighbour_kw, **detect_kw)
+            if len(extra["ra"]):
+                from astropy.table import Table, vstack
+                mag_zero = float(cutouts[prior_band].header.get("MAGZERO", 23.9))
+                rows = Table()
+                rows["object_id"] = n_report + np.arange(len(extra["ra"]), dtype=np.int64)
+                rows["ra"] = extra["ra"]
+                rows["dec"] = extra["dec"]
+                rows[flux_col] = np.clip(
+                    extra["flux"] / 10 ** (0.4 * (mag_zero - 23.9)), 0.01, None)
+                result.mer_cat = vstack([result.mer_cat, rows],
+                                        metadata_conflicts="silent")
+                if verbose:
+                    print(f"[5b] {len(rows)} SEP detection(s) share a blob with the "
+                          f"supplied positions: modeled as neighbours, not reported")
         sources_list, _ = run_model_selection(
             result.mer_cat, tim_prior,
             cutouts[prior_band].data, tim_prior.getInvvar(),
@@ -738,7 +827,7 @@ def run_forced_photometry(
             # the field-average stamp.
             psf_data=result.psf_data.get(prior_band),
             n_workers=n_workers,
-            **(prior.get("detect") or {}))
+            **detect_kw)
         # Rows the ladder could not place (no blob overlap) fall back to a
         # fixed-model source so the list stays 1:1 with mer_cat: MER-prior,
         # or a PointSource at the supplied position for user_coords.
@@ -746,6 +835,12 @@ def run_forced_photometry(
             fallback = build_sources_from_coords(
                 parsed_coords["ra"], parsed_coords["dec"], band=prior_band,
                 flux_guess_ujy=parsed_coords.get("flux_guess_ujy"))
+            if len(result.mer_cat) > n_report:
+                extra_rows = result.mer_cat[n_report:]
+                fallback += build_sources_from_coords(
+                    np.asarray(extra_rows["ra"], float),
+                    np.asarray(extra_rows["dec"], float), band=prior_band,
+                    flux_guess_ujy=np.asarray(extra_rows[flux_col], float))
         else:
             fallback = build_sources_from_mer(
                 result.mer_cat, band=prior_band,
@@ -805,31 +900,14 @@ def run_forced_photometry(
         fit_quality, _, _ = refine_positions(
             tractor_prior, tim_prior, result.sources, fit_quality,
             band=prior_band)
+    if prior["free_shapes"] or prior["refine_positions"]:
+        tractor_prior, final_quality, prior_err_ujy = fit_forced_photometry(
+            tim_prior, result.sources, band=prior_band,
+            initial_fluxes_ujy=initial_flux, return_errors=True)
+        fit_quality &= final_quality
     result.flux_quality = fit_quality
 
-    # Final flux extraction with each source's nearest CATALOG-PSF stamp;
-    # updates source brightnesses in place.
-    if persource_psf and result.psf_data[prior_band].get("stamps") is not None \
-            and len(result.psf_data[prior_band]["stamps"]) > 0:
-        # Each PSF group is a full-image flux fit; cap the group count on
-        # large fields.
-        n_src = len(result.sources)
-        max_groups = 80 if n_src <= 200 else 9
-        if verbose:
-            print(f"[6b] re-extract {prior_band} fluxes with per-source CATALOG-PSF "
-                  f"(<= {max_groups} groups)")
-        _, refit_err_ujy, _ = refit_fluxes_persource_psf(
-            result.sources, cutouts[prior_band], result.psf_data[prior_band],
-            band=prior_band, max_groups=max_groups, n_workers=n_workers,
-            # Re-apply the prior fit's pixel veto.
-            pixel_mask=result.prior_pixel_mask,
-            verbose=verbose)
-        # The per-source-PSF fit produces the exported flux, so its error is
-        # the one to report; keep the field-average error where no stamp.
-        prior_err_ujy = np.where(np.isfinite(refit_err_ujy),
-                                 refit_err_ujy, prior_err_ujy)
-        # Re-apply the physicality check: a different PSF can turn a good
-        # source negative or absurdly bright.
+    if persource_psf:
         prior_ujy = np.array([
             s.brightness.getFlux(prior_band) for s in result.sources
         ]) * _UJY_PER_NMGY
@@ -854,8 +932,9 @@ def run_forced_photometry(
         nisp = fit_nisp_forced(
             result.sources,
             {b: cutouts[b] for b in nisp_targets},
-            {b: result.psf_stamps[b] for b in nisp_targets},
+            {b: result.psf_stamps[b] for b in nisp_targets} if not persource_psf else None,
             bands=nisp_targets,
+            psf_data=result.psf_data if persource_psf else None,
             # The NISP mosaics share the prior-band 0.1 arcsec grid, so the
             # prior fit's bright-star pixel veto carries over unchanged.
             pixel_mask=result.prior_pixel_mask,
@@ -886,14 +965,16 @@ def run_forced_photometry(
             target_ra, target_dec, wise_size, data_dir=wise_dir,
             force_download=force_download)
         wise_psfs = {
-            "W1": get_wise_psf(1, wise_cutouts["coadd_id"]),
-            "W2": get_wise_psf(2, wise_cutouts["coadd_id"]),
+            "W1": get_wise_psf(1, wise_cutouts["coadd_id"], ra=target_ra, dec=target_dec),
+            "W2": get_wise_psf(2, wise_cutouts["coadd_id"], ra=target_ra, dec=target_dec),
         }
         result.wise_results = fit_wise_forced(
             result.sources, wise_cutouts,
             ra=target_ra, dec=target_dec,
             cutout_size_arcsec=cutout_size_arcsec,
-            psf_stamps=wise_psfs, bands=wise_targets)
+            psf_stamps=wise_psfs, bands=wise_targets,
+            prior_cutout=result.cutouts[prior_band],
+            catalog_cache_dir=wise_dir / "catalogs")
         for band in wise_targets:
             if band in result.wise_results:
                 wflux = np.asarray(result.wise_results[band]["flux_ujy"], dtype=float)
@@ -903,5 +984,8 @@ def run_forced_photometry(
                     result.flux_quality, wflux, np.nan)
                 result.flux_errs_ujy[band] = np.where(
                     result.flux_quality, werr, np.nan)
+
+    if n_report is not None and len(result.sources) > n_report:
+        _drop_neighbour_rows(result, n_report)
 
     return result

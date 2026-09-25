@@ -18,16 +18,50 @@ import copy as _copy
 import warnings
 
 import numpy as np
-from tractor import NanoMaggies, PointSource, Tractor
+from tractor import PointSource, Tractor
 from tractor.galaxy import FixedCompositeGalaxy
 
-from .images import build_tractor_image
+from .models import _configure_shape_steps
 
 _UJY_PER_NMGY = 3.631
 
 
 def _flux_ujy(src, band):
     return src.brightness.getFlux(band) * _UJY_PER_NMGY
+
+
+def conditional_flux_errors(tim, sources) -> np.ndarray:
+    """Flux uncertainties in microJy at the sources' current geometry.
+
+    For each single-amplitude source, return ``1/sqrt(sum(t**2 * weight))``
+    with ``t`` its unit-flux template including the image photocalibration.
+    Positions, shapes, neighbours and sky are held fixed; blend/shape/sky
+    covariance and correlated image noise are not included. No parameter
+    or flux is fitted or changed. A source with no weighted template
+    support receives NaN. Requires the linear NanoMaggies image convention
+    used by :func:`build_tractor_image`.
+    """
+    from tractor import LinearPhotoCal
+
+    photocal = tim.getPhotoCal()
+    if not isinstance(photocal, LinearPhotoCal):
+        raise ValueError("conditional_flux_errors requires LinearPhotoCal")
+    scale = float(photocal.getScale())
+    weights = tim.getInvvar()
+    errors = np.full(len(sources), np.nan)
+    for i, src in enumerate(sources):
+        patches = src.getUnitFluxModelPatches(tim, minval=0.)
+        if len(patches) != 1:
+            raise ValueError("conditional_flux_errors requires one flux amplitude per source")
+        patch = patches[0]
+        if patch is None or patch.patch is None:
+            continue
+        spatch, simage = patch.getSlices(tim.shape)
+        template = np.asarray(patch.patch[spatch], dtype=float) * scale
+        iv = float(np.sum(template**2 * weights[simage]))
+        if np.isfinite(iv) and iv > 0:
+            errors[i] = _UJY_PER_NMGY / np.sqrt(iv)
+    return errors
 
 
 def _revert_railed_shapes(sources, seed_shapes, *,
@@ -151,6 +185,7 @@ def fit_free_shapes(tractor, tim, sources, fit_quality, *,
             continue
         px, py = wcs.positionToPixel(src.getPosition())
         if margin_pix < px < W - margin_pix and margin_pix < py < H - margin_pix:
+            _configure_shape_steps(src.getShape())
             src.thawAllParams()
             src.freezeParam("pos")
             seed_shapes[i] = _copy.deepcopy(src.getShape())
@@ -214,8 +249,8 @@ def refine_positions(tractor, tim, sources, fit_quality, *,
     Thaws the centroid of sources with ``flux > flux_floor_ujy`` at least
     ``margin_pix`` from the edge, then jointly re-optimizes flux + position.
     Moves beyond ``max_shift_arcsec`` revert to the prior position: the
-    genuine Q1 catalog-to-centroid offset is sub-pixel (median ~0.02 arcsec,
-    95th percentile < 0.1 arcsec), so a larger move is a runaway. Fluxes are
+    genuine Q1 catalog-to-centroid offset is sub-pixel, so a larger move is
+    a runaway. Fluxes are
     re-settled at the final positions, which later NISP/unWISE fits share.
 
     Returns ``(fit_quality, n_refined, shift_arcsec)`` where ``shift_arcsec``
@@ -280,134 +315,6 @@ def refine_positions(tractor, tim, sources, fit_quality, *,
             break
 
     return fit_quality, len(thawed) - n_reverted, shift_arcsec
-
-
-def refit_fluxes_persource_psf(sources, cutout, psf_data, *,
-                               band: str = "VIS",
-                               mag_zero: float | None = None,
-                               max_groups: int = 80,
-                               n_workers: int = 1,
-                               pixel_mask: np.ndarray | None = None,
-                               verbose: bool = False):
-    """Re-extract fluxes using each source's nearest CATALOG-PSF stamp.
-
-    The two-step fit uses a single field-average PSF; across a Euclid VIS
-    field the PSF FWHM varies ~15% peak-to-peak and the peak amplitude by
-    ~+/-9%, biasing bright point-source fluxes at the few-percent level.
-    This re-runs flux-only forced photometry once per PSF group (all
-    sources in the model each time; only the group's fluxes are kept) with
-    positions and shapes frozen.
-
-    Grouping is by nearest CATALOG-PSF stamp when the number of distinct
-    stamps is <= ``max_groups``; otherwise sources are binned onto an
-    ``M x M`` spatial grid with ``M = floor(sqrt(max_groups))`` and each
-    cell uses the stamp nearest its source centroid.
-
-    ``pixel_mask`` (boolean, True = exclude) re-applies the prior fit's
-    pixel veto (e.g. the STARSIGNAL bright-star mask). A fully masked
-    source keeps its current brightness and reports a ``nan`` error.
-
-    Updates each source's ``brightness`` in place and returns
-    ``(flux_ujy, flux_err_ujy, n_groups)`` where ``flux_ujy`` and
-    ``flux_err_ujy`` are aligned 1:1 with ``sources``. ``flux_err_ujy`` is the
-    formal 1-sigma flux uncertainty (1/sqrt of the Tractor inverse-variance)
-    from the per-group fit; it is ``nan`` where no stamps were available.
-    """
-    cat_ra = np.asarray(psf_data.get("ra", []), dtype=float)
-    cat_dec = np.asarray(psf_data.get("dec", []), dtype=float)
-    n = len(sources)
-    if cat_ra.size == 0 or psf_data.get("stamps") is None or len(psf_data["stamps"]) == 0:
-        return (np.array([_flux_ujy(s, band) for s in sources]),
-                np.full(len(sources), np.nan), 0)
-
-    src_ra = np.array([float(s.getPosition().ra) for s in sources])
-    src_dec = np.array([float(s.getPosition().dec) for s in sources])
-    cosd0 = np.cos(np.radians(float(np.median(src_dec))))
-
-    nearest = np.empty(n, dtype=int)
-    for j in range(n):
-        cosd = np.cos(np.radians(src_dec[j]))
-        d = ((cat_ra - src_ra[j]) * cosd) ** 2 + (cat_dec - src_dec[j]) ** 2
-        nearest[j] = int(np.argmin(d))
-
-    n_unique = len(np.unique(nearest))
-    if n_unique <= max_groups:
-        group_stamp = {pi: int(pi) for pi in np.unique(nearest)}
-        group_members = {pi: np.where(nearest == pi)[0] for pi in np.unique(nearest)}
-    else:
-        m = max(1, int(np.floor(np.sqrt(max_groups))))
-        ra_lo, ra_hi = src_ra.min(), src_ra.max()
-        dec_lo, dec_hi = src_dec.min(), src_dec.max()
-        ra_edges = np.linspace(ra_lo, ra_hi, m + 1)
-        dec_edges = np.linspace(dec_lo, dec_hi, m + 1)
-        ix = np.clip(np.digitize(src_ra, ra_edges) - 1, 0, m - 1)
-        iy = np.clip(np.digitize(src_dec, dec_edges) - 1, 0, m - 1)
-        cell = iy * m + ix
-        group_stamp, group_members = {}, {}
-        for c in np.unique(cell):
-            mem = np.where(cell == c)[0]
-            ra_c = src_ra[mem].mean()
-            dec_c = src_dec[mem].mean()
-            d = ((cat_ra - ra_c) * cosd0) ** 2 + (cat_dec - dec_c) ** 2
-            group_stamp[c] = int(np.argmin(d))
-            group_members[c] = mem
-
-    flux_nmgy = np.zeros(n)
-    if verbose:
-        print(f"  per-source PSF: {n} sources -> {len(group_members)} PSF group(s)"
-              f"{' (grid-binned)' if n_unique > max_groups else ''}")
-
-    flux_iv_nmgy = np.zeros(n)
-
-    def _fit_group(item):
-        key, grp = item
-        pi = group_stamp[key]
-        stamp = psf_data["stamps"][int(pi)].astype(np.float32).copy()
-        stamp /= stamp.sum()
-        # halfsize is a parent-image pixel hint; clear it so this image
-        # sizes its own patch.
-        srcs = [_copy.deepcopy(s) for s in sources]
-        for s in srcs:
-            if hasattr(s, "halfsize"):
-                s.halfsize = None
-            s.freezeAllBut("brightness")
-        tim = build_tractor_image(cutout, stamp, mag_zero=mag_zero)
-        if pixel_mask is not None:
-            tim.inverr = np.where(pixel_mask, 0.0, tim.inverr)
-        tim.freezeAllParams()
-        # With only brightness thawed and the sky frozen, R.IV is one entry
-        # per source; the flux uncertainty is 1/sqrt(IV).
-        R = Tractor([tim], srcs).optimize_forced_photometry(
-            minsb=0, mindlnp=1, sky=False, variance=True)
-        fl = np.array([s.brightness.getFlux(band) for s in srcs])
-        iv = np.asarray(R.IV, dtype=float) if getattr(R, "IV", None) is not None \
-            else np.zeros(len(srcs))
-        if iv.shape[0] != len(srcs):
-            iv = np.zeros(len(srcs))
-        return grp, fl, iv
-
-    items = list(group_members.items())
-    if n_workers > 1 and len(items) > 1:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(
-                min(n_workers, len(items))) as ex:
-            for grp, fl, iv in ex.map(_fit_group, items):
-                flux_nmgy[grp] = fl[grp]
-                flux_iv_nmgy[grp] = iv[grp]
-    else:
-        for item in items:
-            grp, fl, iv = _fit_group(item)
-            flux_nmgy[grp] = fl[grp]
-            flux_iv_nmgy[grp] = iv[grp]
-
-    for j, s in enumerate(sources):
-        s.brightness = NanoMaggies(**{band: float(flux_nmgy[j])})
-    with np.errstate(divide="ignore", invalid="ignore"):
-        flux_err_nmgy = np.where(flux_iv_nmgy > 0,
-                                 1.0 / np.sqrt(flux_iv_nmgy), np.nan)
-    return (flux_nmgy * _UJY_PER_NMGY,
-            flux_err_nmgy * _UJY_PER_NMGY,
-            int(len(group_members)))
 
 
 def measure_residual(tractor, tim, footprint=None):

@@ -1,6 +1,6 @@
 """Forced photometry on NISP Y/J/H bands given VIS-fitted sources.
 
-For each NISP band we build a Tractor ``Image`` with the field-average PSF,
+For each NISP band we build a Tractor ``Image`` with the supplied PSF field,
 clone the VIS-fitted sources keeping positions and shapes, and run flux-only
 optimization. Returns fluxes in microJanskys, aligned 1:1 with the input
 source list.
@@ -34,13 +34,13 @@ def _clone_for_band(vis_src, band: str):
 
 def _fit_one_nisp_band(args):
     """Worker for ``fit_nisp_forced``: one band, runnable in a thread."""
-    sources, band, cutout, psf_stamp, pixel_mask = args
+    sources, band, cutout, psf_stamp, pixel_mask, psf_data = args
     if pixel_mask is not None:
         invvar = np.where(np.asarray(pixel_mask, bool), 0.0,
                           _invvar_from_rms(cutout.rms, cutout.data))
-        tim = build_tractor_image(cutout, psf_stamp, invvar=invvar)
+        tim = build_tractor_image(cutout, psf_stamp, invvar=invvar, psf_data=psf_data)
     else:
-        tim = build_tractor_image(cutout, psf_stamp)
+        tim = build_tractor_image(cutout, psf_stamp, psf_data=psf_data)
     band_sources = [_clone_for_band(s, band) for s in sources]
     for s in band_sources:
         s.freezeAllBut("brightness")
@@ -61,9 +61,10 @@ def _fit_one_nisp_band(args):
     return band, {"flux_ujy": flux_ujy, "flux_err_ujy": flux_err_ujy}
 
 
-def fit_nisp_forced(sources, cutouts: dict, psf_stamps: dict,
+def fit_nisp_forced(sources, cutouts: dict, psf_stamps: dict | None = None,
                     *,
                     bands: tuple = ("Y", "J", "H"),
+                    psf_data: dict | None = None,
                     pixel_mask: np.ndarray | None = None,
                     n_workers: int = 1) -> dict:
     """Run forced photometry on each NISP band.
@@ -72,7 +73,11 @@ def fit_nisp_forced(sources, cutouts: dict, psf_stamps: dict,
     ----------
     sources : list of Tractor sources (from the VIS step)
     cutouts : dict[band] -> Cutout (output of fetch_cutout)
-    psf_stamps : dict[band] -> ndarray   (field-average PSF per band)
+    psf_stamps : dict[band] -> ndarray, optional
+        Constant PSFs; not needed when ``psf_data`` supplies local samples.
+    psf_data : dict[band] -> PSF samples, optional
+        Render every source through its nearest sample in that band.
+        If omitted, use the constant ``psf_stamps`` as before.
     bands : tuple
         Subset of NISP bands to fit.
     pixel_mask : ndarray of bool, optional
@@ -92,7 +97,9 @@ def fit_nisp_forced(sources, cutouts: dict, psf_stamps: dict,
         is the formal 1-sigma uncertainty (1/sqrt of the Tractor
         inverse-variance) from the flux-only fit.
     """
-    work = [(sources, band, cutouts[band], psf_stamps[band], pixel_mask)
+    work = [(sources, band, cutouts[band],
+             psf_stamps[band] if psf_data is None and psf_stamps is not None else None, pixel_mask,
+             psf_data[band] if psf_data is not None else None)
             for band in bands if band in cutouts]
     if n_workers <= 1 or len(work) <= 1:
         results = [_fit_one_nisp_band(w) for w in work]

@@ -82,7 +82,7 @@ def build_catalog(result, *, origin: str | None = None,
         ``near_bright_star`` / ``masked`` / ``edge`` / ``reliable``
         (:func:`euclid_phot.flags.flag_sources`).
     depth : bool
-        Record the per-band 5-sigma point-source depth
+        Record the per-band 5-sigma equivalent of the median source error
         (``meta['depth_5sigma_ab']``), computed from the median reported
         flux error, i.e. from the calibrated errors when the run used
         ``calibrate_errors=True``.
@@ -91,7 +91,7 @@ def build_catalog(result, *, origin: str | None = None,
     -------
     astropy.table.Table
         One row per source, aligned with ``result.sources``. Columns:
-        ``object_id, ra, dec, origin, model, is_star, flux_quality`` and, for
+        ``object_id, ra, dec, origin, model, is_star`` and, for
         each band that was measured, ``flux_<band>_ujy``, ``flux_err_<band>_ujy``,
         ``mag_<band>_ab``, ``mag_err_<band>_ab``. Units are attached to columns
         and the error definition per band family is recorded in ``table.meta``.
@@ -122,9 +122,6 @@ def build_catalog(result, *, origin: str | None = None,
     if origin is None:
         origin = (result.prior or {}).get("objects", "mer")
 
-    quality = (result.flux_quality if result.flux_quality is not None
-               else np.ones(n, dtype=bool))
-
     tab = Table()
     tab["object_id"] = object_id
     tab["ra"] = ra * u.deg
@@ -132,7 +129,6 @@ def build_catalog(result, *, origin: str | None = None,
     tab["origin"] = np.array([origin] * n)
     tab["model"] = np.array(model)
     tab["is_star"] = np.asarray(is_star, dtype=bool)
-    tab["flux_quality"] = np.asarray(quality, dtype=bool)
 
     bands = [b for b in _BAND_ORDER if b in result.fluxes_ujy]
     bands += [b for b in result.fluxes_ujy if b not in bands]
@@ -158,9 +154,9 @@ def build_catalog(result, *, origin: str | None = None,
             error_origin["VIS/Y/J/H"] = (
                 "formal Tractor inverse-variance x empirical PSF-scale "
                 "inflation (empty-position point-source calibration; "
-                "factors in meta['error_inflation']. Exact for point "
-                "sources; a lower bound for extended sources, which "
-                "integrate more correlated coadd noise)")
+                "factors in meta['error_inflation']; conditional on fixed "
+                "templates, excluding blend and shape covariance. The "
+                "empty-position scale is a diagnostic, not exact coverage)")
         else:
             error_origin["VIS/Y/J/H"] = (
                 "formal Tractor inverse-variance (per-pixel noise only; "
@@ -168,9 +164,21 @@ def build_catalog(result, *, origin: str | None = None,
                 "calibrate_errors=True)")
     if any(b in result.fluxes_ujy for b in ("W1", "W2")):
         error_origin["W1/W2"] = (
-            "formal unWISE inverse-variance x empirical chi-inflation "
-            "(confusion + coadd-correlated noise; calibrated against "
-            "Schlafly+2019 dflux)")
+            "conditional template errors from unWISE pixel inverse variance "
+            "x empirical residual chi-inflation; excludes blend and sky "
+            "covariance and model mismatch. Not calibrated against an "
+            "external catalogue; the source-sparse residual scale is heuristic")
+    wise_results = getattr(result, "wise_results", None) or {}
+    if wise_results:
+        tab.meta["wise_psf_normalization"] = {
+            b: r["psf_normalization"] for b, r in wise_results.items()
+            if "psf_normalization" in r}
+        tab.meta["wise_flux_convention"] = (
+            "Fitted amplitudes with unit-sum finite PSF stamps, converted "
+            "using the unWISE image zero point and adopted Vega-to-AB offsets. "
+            "The central-19-pixel transfer is recorded for catalog comparison; "
+            "it is not applied to these flux columns. Absolute PSF calibration "
+            "and source-model mismatch are additional uncertainties.")
     tab.meta["error_provenance"] = error_origin
     if calib:
         tab.meta["error_inflation"] = {
@@ -179,7 +187,7 @@ def build_catalog(result, *, origin: str | None = None,
             b: d.get("method", "") for b, d in calib.items()}
 
     if with_flags and n > 0:
-        from .flags import blend_flags, flag_sources
+        from .flags import blend_flags, flag_sources, probable_bright_stars
         # Flag on the band that defined the source list; fall back to the
         # first band in canonical order if the prior band is not recorded.
         flag_band = (result.prior or {}).get("band")
@@ -193,14 +201,27 @@ def build_catalog(result, *, origin: str | None = None,
             for c in bf.colnames:
                 tab[c] = bf[c]
             prior_cut = (result.cutouts or {}).get(flag_band)
+            flag_stars = is_star
+            flag_flux = np.asarray(result.fluxes_ujy[flag_band], float)
+            needed = {"point_like_prob", "flux_vis_psf", "flux_vis_sersic"}
+            if (flag_band == "VIS" and mer is not None and len(mer) == n
+                    and needed.issubset(getattr(mer, "colnames", []))):
+                flag_stars = probable_bright_stars(mer)
+                flag_flux = np.ma.filled(np.ma.asarray(mer["flux_vis_psf"], dtype=float), np.nan)
             fs = flag_sources(
-                ra, dec, np.asarray(result.fluxes_ujy[flag_band], float),
-                is_star,
+                ra, dec, flag_flux, flag_stars,
                 wcs=getattr(prior_cut, "wcs", None),
                 flag_plane=getattr(prior_cut, "flag", None),
-                shape=getattr(prior_cut, "shape", None))
+                shape=getattr(prior_cut, "shape", None),
+                pixel_mask=getattr(result, "prior_pixel_mask", None))
             for c in fs.colnames:
                 tab[c] = fs[c]
+            tab.meta["quality_flag_scope"] = (
+                f"Geometric checks in the {flag_band} prior band. 'reliable' "
+                "does not test flux convergence, template coverage, or "
+                "blending in every target band. 'is_star' denotes the "
+                "fitted PointSource model; VIS bright-star flags use MER "
+                "classification and reference flux when available.")
         # det_quality_flag bits 7/8: source inside the MER VIS/NIR
         # bright-star polygon masks.
         mer_cat = getattr(result, "mer_cat", None)
@@ -241,8 +262,9 @@ def build_catalog(result, *, origin: str | None = None,
             tab.meta["depth_5sigma_ab"] = depths
             tab.meta["depth_definition"] = (
                 "AB mag of a source whose flux is 5x the median reported "
-                "flux error (point-source forced-photometry depth; uses "
-                "the calibrated errors when error calibration ran)")
+                "flux error across all reported source models; an error "
+                "summary, not a point-source limiting depth or completeness "
+                "measurement. Uses the calibrated errors when available")
 
     from datetime import datetime, timezone
 
