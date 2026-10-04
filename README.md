@@ -1,7 +1,7 @@
 # Euclid forced photometry
 
 Measure fluxes on Euclid Q1 VIS and NISP images using Tractor source models,
-with optional unWISE W1/W2 photometry. VIS constrains the source profiles;
+with optional unWISE W1/W2 and Spitzer/IRAC photometry. VIS constrains the source profiles;
 the lower-resolution fits keep those profiles fixed and solve for flux.
 
 This is an educational analysis package. It provides explicit diagnostics
@@ -15,11 +15,14 @@ list and uncertainty assumptions for their own science sample.
 - [01: Multi-band forced photometry on Euclid Q1 data](notebooks/01_multiband_forced_photometry.ipynb):
   a 200-arcsec field, source models on VIS, forced fluxes in Y, J and H,
   residuals and catalog checks.
-- [02: Forced photometry on unWISE W1 and W2](notebooks/02_wise_forced_photometry.ipynb):
-  the same field on unWISE W1 and W2, with residuals and a catalog cross-check.
-- [03: Multi-band photometry in one call](notebooks/03_one_call.ipynb): a compact 50-arcsec
+- [02: Multi-band photometry in one call](notebooks/02_one_call.ipynb): a compact 50-arcsec
   Euclid run and the resulting catalog. WISE is optional.
-- [04: Photometry at supplied coordinates](notebooks/04_photometry_at_coordinates.ipynb):
+- [03: Forced photometry on unWISE W1 and W2](notebooks/03_wise_forced_photometry.ipynb):
+  the same field on unWISE W1 and W2, with residuals and a catalog cross-check.
+- [04: IRAC forced photometry with a Euclid VIS morphology prior](notebooks/04_irac_forced_photometry.ipynb):
+  Spitzer/IRAC channels 1-4 with a reconstructed spatially varying PRF, residuals
+  and a DAWN catalog comparison.
+- [05: Photometry at supplied coordinates](notebooks/05_photometry_at_coordinates.ipynb):
   photometry at user positions without a MER source list.
 - [Supporting: Model selection](notebooks/supporting_notebooks/model_selection.ipynb):
   the profile trials for one pair of neighbouring sources.
@@ -27,7 +30,7 @@ list and uncertainty assumptions for their own science sample.
   matching-PSF point-source checks on real backgrounds.
 
 Start with 00 to learn the fitting model, 01 to inspect the full workflow,
-or 03 for a short working example.
+or 02 for a short working example.
 
 ## Install and run
 
@@ -84,11 +87,32 @@ uses its nearest sample inside a joint fit. Images retain their delivered
 MER pixels. A cutout spanning multiple MER tiles needs separate tile fits.
 
 The package also supports supplied coordinates and selected profile classes;
-see [notebook 04](notebooks/04_photometry_at_coordinates.ipynb) and
+see [notebook 05](notebooks/05_photometry_at_coordinates.ipynb) and
 `help(ep.run_forced_photometry)`. With the tree, unlisted neighbours detected
 in the same blob are added to the model; with an explicit profile class the
 supplied list must include them. The command-line entry point is
 `euclid-phot run --help`.
+
+## IRAC
+
+```python
+import euclid_phot as ep
+
+run = ep.run_irac_photometry(
+    "edff-irac-demo", 52.932, -28.088, 200.0,  # run name, RA, Dec, box side
+    channels=("IRAC1", "IRAC2", "IRAC3", "IRAC4"),
+    mosaic_backend="dawn",  # or "seip", "pbcd"
+    data_root=Path("examples/native_data/irac"), n_workers=4,
+)
+catalog = run.to_table()
+```
+
+The VIS fit, the effective-PRF grid and each channel fit are cached under the
+run name; a repeated call with the same settings reloads them, and
+`force_refit=True` fits again. `run.save_catalog()`, `run.save_images()` and
+`run.save_cutout()` write to `examples/output/irac/<run name>/`.
+`wise_bands=("W1", "W2")` also fits the same VIS models to unWISE. See
+[notebook 04](notebooks/04_irac_forced_photometry.ipynb).
 
 ## Interpreting results
 
@@ -112,7 +136,7 @@ by tuning a PSF to force catalog agreement. WISE blends also remain sensitive
 to PSF shape and source-list completeness.
 
 The [Schlafly et al. (2019) unWISE catalog](https://ui.adsabs.harvard.edu/abs/2019ApJS..240...30S) uses
-a different PSF normalization. Notebook 02 transfers our fitted amplitudes
+a different PSF normalization. Notebook 03 transfers our fitted amplitudes
 to that convention for its comparison only; exported fluxes retain their
 fitting convention. Agreement with that catalog is a cross-check, not an
 absolute calibration or proof of individual blended flux accuracy.

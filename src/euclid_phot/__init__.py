@@ -18,6 +18,7 @@ Pipeline order:
     fit_nisp_forced          nisp.py
     calibrate_result_errors  calibrate.py   (empirical error calibration)
     fit_wise_forced          wise.py
+    run_irac_photometry      irac/          (Spitzer/IRAC subpackage)
 
 Beyond the single-cutout pipeline: ``run_injection_recovery``
 (injection.py) validates the photometry and errors on synthetic sources;
@@ -96,6 +97,8 @@ _LAZY = {
     "query_unwise_2019": ("wise", "query_unwise_2019"),
     "vega_mag_to_ujy": ("wise", "vega_mag_to_ujy"),
     "select_isolated_sources": ("wise", "select_isolated_sources"),
+    # irac (subpackage; see euclid_phot.irac)
+    "run_irac_photometry": ("irac.pipeline", "run_irac_photometry"),
     # pipeline
     "run_forced_photometry": ("pipeline", "run_forced_photometry"),
     "ForcedPhotometryResult": ("pipeline", "ForcedPhotometryResult"),
@@ -106,6 +109,7 @@ _LAZY = {
     # submodules
     "config": ("config", None),
     "viz": ("viz", None),
+    "irac": ("irac", None),
 }
 
 __all__ = list(_LAZY.keys()) + ["__version__"]
