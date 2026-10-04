@@ -13,16 +13,17 @@ list and uncertainty assumptions for their own science sample.
 
 - [00: Modeling a galaxy with the Tractor](notebooks/00_how_tractor_works.ipynb): one galaxy,
   with image construction, model parameters and optimization written out.
-- [01: Multi-band forced photometry on Euclid Q1 data](notebooks/01_multiband_forced_photometry.ipynb):
+- [01: Forced photometry on Euclid NISP with a VIS prior](notebooks/01_nisp_forced_photometry.ipynb):
   a 200-arcsec field, source models on VIS, forced fluxes in Y, J and H,
   residuals and catalog checks.
-- [02: Multi-band photometry in one call](notebooks/02_one_call.ipynb): a compact 50-arcsec
-  Euclid run and the resulting catalog. WISE is optional.
-- [03: Forced photometry on unWISE W1 and W2](notebooks/03_wise_forced_photometry.ipynb):
+- [02: Forced photometry on unWISE W1 and W2](notebooks/02_wise_forced_photometry.ipynb):
   the same field on unWISE W1 and W2, with residuals and a catalog cross-check.
-- [04: Forced photometry on Spitzer/IRAC](notebooks/04_irac_forced_photometry.ipynb):
-  IRAC channels 1-4 with a spatially varying effective PRF, residuals, and
-  comparisons with the DAWN catalog and with unWISE.
+- [03: Forced photometry on Spitzer/IRAC](notebooks/03_irac_forced_photometry.ipynb):
+  a 200-arcsec field in EDF-F, IRAC channels 1-4 with a spatially varying
+  effective PRF, residuals, and comparisons with the DAWN catalog and unWISE.
+- [04: Multi-band photometry in one call](notebooks/04_one_call.ipynb): a compact
+  50-arcsec run measuring Euclid, unWISE and IRAC bands in one call, and the
+  resulting catalog.
 - [05: Photometry at supplied coordinates](notebooks/05_photometry_at_coordinates.ipynb):
   photometry at user positions without a MER source list.
 - [Supporting: Model selection](notebooks/supporting_notebooks/model_selection.ipynb):
@@ -31,7 +32,7 @@ list and uncertainty assumptions for their own science sample.
   matching-PSF point-source checks on real backgrounds.
 
 Start with 00 to learn the fitting model, 01 to inspect the full workflow,
-or 02 for a short working example.
+or 04 for a short working example.
 
 ## Install and run
 
@@ -117,7 +118,7 @@ Each IRAC channel uses a spatially varying effective PRF rebuilt from the
 detector PRFs and the exposures in the mosaic. `flux_err_IRAC<n>_ujy`
 includes a 2% PRF systematic. `result.image_set(band)` returns the data,
 model and residual images of the prior band and of every WISE and IRAC
-band. See [notebook 04](notebooks/04_irac_forced_photometry.ipynb).
+band. See [notebook 03](notebooks/03_irac_forced_photometry.ipynb).
 
 ## Interpreting results
 
@@ -146,11 +147,11 @@ inside it, so IRAC fluxes within a few arcsec of the edge can absorb light
 from outside. Request a slightly larger field when the edge matters.
 
 The [Schlafly et al. (2019) unWISE catalog](https://ui.adsabs.harvard.edu/abs/2019ApJS..240...30S) uses
-a different PSF normalization. Notebook 03 transfers our fitted amplitudes
+a different PSF normalization. Notebook 02 transfers our fitted amplitudes
 to that convention for its comparison only; exported fluxes retain their
 fitting convention. Agreement with that catalog is a cross-check, not an
 absolute calibration or proof of individual blended flux accuracy. The same
-holds for the DAWN catalog comparison in notebook 04. W1 and W2 differ in
+holds for the DAWN catalog comparison in notebook 03. W1 and W2 differ in
 bandpass from IRAC1 and IRAC2, so their ratios depend on source colour.
 
 Matching-PSF injections test rendering and recovery consistency. They do not

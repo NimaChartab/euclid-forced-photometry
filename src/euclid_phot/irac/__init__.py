@@ -4,7 +4,7 @@
 :func:`fit_irac_forced`, which cuts each IRAC mosaic to the field, rebuilds
 its spatially varying effective PRF from the detector PRFs and the
 contributing exposures, and fits the VIS models to the IRAC pixels.
-Notebook 04 shows the workflow.
+Notebook 03 shows the workflow.
 """
 
 from .archive import PBCDLocalSet, PBCDProductSet, discover_pbcd, fetch_pbcd

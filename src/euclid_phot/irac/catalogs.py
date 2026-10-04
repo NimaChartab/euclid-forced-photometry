@@ -278,7 +278,7 @@ def compare_wise_irac(
     ``comparison_selected`` requires S/N of at least ``minimum_snr`` in both
     bands and no VIS neighbour brighter than ``flux_fraction`` of the source
     within ``isolation_arcsec`` (default two WISE FWHM), the isolation
-    criterion of notebook 03.
+    criterion of notebook 02.
     """
     from ..wise import _WISE_FWHM_ARCSEC, select_isolated_sources
 
