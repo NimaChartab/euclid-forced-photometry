@@ -1,13 +1,13 @@
 """One-call driver: ``run_forced_photometry(prior=..., target_bands=...)``.
 
 Composes the per-step functions in catalog / cutouts / psf / images /
-models / selection / fit / nisp / wise; the same step functions are
+models / selection / fit / nisp / wise / irac; the same step functions are
 exposed individually for stage-by-stage use.
 
 ``prior`` describes where positions and shapes come from (``band``,
 ``objects`` = "mer" or "coords", ``model_selection`` = "prior" / "tree" /
 an explicit Tractor class, ``free_shapes``); ``target_bands`` lists the
-Euclid and WISE bands to propagate to. The prior band is removed from
+Euclid, WISE and IRAC bands to propagate to. The prior band is removed from
 ``target_bands["euclid"]`` if present. WISE forced photometry freezes each
 source's VIS position and shape, fitting flux only, exactly as for NISP;
 ``source_models="point"`` instead collapses every source to a
@@ -42,12 +42,13 @@ _VALID_PRIOR_BANDS = {"VIS", "Y", "J", "H"}
 _VALID_OBJECTS = {"mer", "free", "coords"}
 _VALID_EUCLID_TARGETS = {"VIS", "Y", "J", "H"}
 _VALID_WISE_TARGETS = {"W1", "W2"}
+_VALID_IRAC_TARGETS = {"IRAC1", "IRAC2", "IRAC3", "IRAC4"}
 _EXPLICIT_MODELS = ("point", "sersic", "exp", "dev")
 
 _DEFAULT_PRIOR = {"band": "VIS", "objects": "mer", "model_selection": None,
                   "free_shapes": True, "refine_positions": False,
                   "detect": None, "selector": None}
-_DEFAULT_TARGET_BANDS = {"euclid": ("Y", "J", "H"), "wise": ()}
+_DEFAULT_TARGET_BANDS = {"euclid": ("Y", "J", "H"), "wise": (), "irac": ()}
 
 # MER flux column per Euclid band, used to seed Tractor brightness.
 _MER_FLUX_COL = {
@@ -133,18 +134,17 @@ def _normalize_prior(prior: dict | None, *,
 
 
 def _normalize_target_bands(tb: dict | None, prior_band: str) -> dict:
-    out = {"euclid": tuple(_DEFAULT_TARGET_BANDS["euclid"]),
-           "wise":   tuple(_DEFAULT_TARGET_BANDS["wise"])}
+    out = {key: tuple(value) for key, value in _DEFAULT_TARGET_BANDS.items()}
     if tb is not None:
-        unknown = set(tb) - {"euclid", "wise"}
+        unknown = set(tb) - set(out)
         if unknown:
             raise ValueError(
                 f"target_bands has unknown keys: {sorted(unknown)}. "
-                f"Allowed: 'euclid', 'wise'.")
-        if "euclid" in tb:
-            out["euclid"] = tuple(tb["euclid"])
-        if "wise" in tb:
-            out["wise"] = tuple(tb["wise"])
+                f"Allowed: 'euclid', 'wise', 'irac'.")
+        for key in out:
+            if key in tb:
+                out[key] = tuple(tb[key])
+    out["irac"] = tuple(str(b).upper() for b in out["irac"])
     bad_e = set(out["euclid"]) - _VALID_EUCLID_TARGETS
     if bad_e:
         raise ValueError(
@@ -155,6 +155,11 @@ def _normalize_target_bands(tb: dict | None, prior_band: str) -> dict:
         raise ValueError(
             f"target_bands['wise'] has unknown bands: {sorted(bad_w)}. "
             f"Allowed: {sorted(_VALID_WISE_TARGETS)}.")
+    bad_i = set(out["irac"]) - _VALID_IRAC_TARGETS
+    if bad_i:
+        raise ValueError(
+            f"target_bands['irac'] has unknown bands: {sorted(bad_i)}. "
+            f"Allowed: {sorted(_VALID_IRAC_TARGETS)}.")
     out["euclid"] = tuple(b for b in out["euclid"] if b != prior_band)
     return out
 
@@ -293,8 +298,10 @@ def _drop_neighbour_rows(result, n_keep: int) -> None:
         result.flux_quality = np.asarray(result.flux_quality)[:n_keep]
     if result.chosen_models is not None:
         result.chosen_models = list(result.chosen_models[:n_keep])
-    for r in (result.wise_results or {}).values():
-        for key in ("flux_ujy", "flux_err_ujy"):
+    for r in [*(result.wise_results or {}).values(),
+              *(result.irac_results or {}).values()]:
+        for key in ("flux_ujy", "flux_err_ujy", "flux_err_stat_ujy",
+                    "position_shift_arcsec"):
             if key in r and len(r[key]) == n_total:
                 r[key] = np.asarray(r[key])[:n_keep]
 
@@ -344,6 +351,7 @@ class ForcedPhotometryResult:
     flux_quality: np.ndarray | None = None
     chosen_models: list | None = None
     wise_results: dict | None = None
+    irac_results: dict | None = None
     # band -> info dict from calibrate.measure_error_inflation; the
     # inflation factors are already applied to flux_errs_ujy.
     error_calibration: dict = field(default_factory=dict)
@@ -369,6 +377,44 @@ class ForcedPhotometryResult:
         table.meta['psf_mode'] = self.psf_mode
         return table
 
+    def image_set(self, band: str) -> dict:
+        """Data, model, residual and invvar images and WCS for one band.
+
+        Available for the prior band (the model is rendered from the
+        fitted sources), and for every fitted WISE and IRAC band. Images are
+        in microJansky per pixel and ``invvar`` in 1/(microJansky/pixel)^2.
+        """
+        from .viz import UJY_PER_PIXEL, ujy_per_unit
+        band = str(band).upper() if str(band).upper().startswith(
+            ("W", "IRAC")) else str(band)
+        for results, is_wise in ((self.wise_results, True),
+                                 (self.irac_results, False)):
+            if results and band in results:
+                r = results[band]
+                f = ujy_per_unit(band=band) if is_wise else 1.0
+                return {"data": r["data"] * f, "model": r["model"] * f,
+                        "residual": r["residual"] * f,
+                        "invvar": r["invvar"] / f**2,
+                        "wcs": r["wcs"], "unit": UJY_PER_PIXEL}
+        if band != self.prior.get("band"):
+            raise ValueError(
+                f"no images for {band!r}; available: the prior band "
+                f"{self.prior.get('band')!r} and the WISE/IRAC bands fitted")
+        from tractor import Tractor
+        cutout = self.cutouts[band]
+        persource = self.psf_mode == 'nearest-source-position'
+        tim = build_tractor_image(
+            cutout, self.psf_stamps.get(band),
+            psf_data=self.psf_data.get(band) if persource else None,
+            pixel_mask=self.prior_pixel_mask)
+        sources = list(self.sources) + list(self.neighbour_sources)
+        f = ujy_per_unit(cutout)
+        model = np.asarray(Tractor([tim], sources).getModelImage(0)) * f
+        data = np.asarray(tim.getImage()) * f
+        return {"data": data, "model": model, "residual": data - model,
+                "invvar": np.asarray(tim.getInvvar()) / f**2, "wcs": cutout.wcs,
+                "unit": UJY_PER_PIXEL}
+
 
 def run_forced_photometry(
     target_ra: float,
@@ -389,8 +435,9 @@ def run_forced_photometry(
     psf_product: str = "auto",
     cutouts: dict | None = None,
     mer_catalog=None,
+    irac_options: dict | None = None,
 ) -> ForcedPhotometryResult:
-    """Forced photometry across Euclid VIS / NISP and (optionally) unWISE.
+    """Forced photometry across Euclid VIS / NISP and optionally unWISE and IRAC.
 
     Parameters
     ----------
@@ -454,9 +501,10 @@ def run_forced_photometry(
         ``result.neighbour_fluxes_ujy``.
     target_bands : dict, optional
         Forced-photometry targets. Keys: ``euclid`` (tuple of Euclid
-        band names), ``wise`` (tuple of ``"W1"``/``"W2"`` or empty).
-        Default ``{"euclid": ("Y", "J", "H"), "wise": ()}``. The prior
-        band is automatically removed from ``euclid`` if present.
+        band names), ``wise`` (tuple of ``"W1"``/``"W2"`` or empty),
+        ``irac`` (tuple of ``"IRAC1"`` ... ``"IRAC4"`` or empty).
+        Default ``{"euclid": ("Y", "J", "H"), "wise": (), "irac": ()}``.
+        The prior band is automatically removed from ``euclid`` if present.
     data_dir : Path
         Local cache directory for cutouts / PSF stamps / unWISE tiles.
     force_download : bool
@@ -510,6 +558,12 @@ def run_forced_photometry(
         Caller-supplied MER catalog override; skips the TAP query / cache
         read. Only meaningful for ``objects='mer'`` or ``'free'``
         (``'coords'`` raises).
+    irac_options : dict, optional
+        Keywords for :func:`euclid_phot.irac.fit_irac_forced`, e.g.
+        ``{"mosaic_backend": "dawn"}`` (default ``"seip"``; ``"dawn"`` is
+        deeper but covers only the Cosmic Dawn fields, ``"pbcd"`` uses
+        single-observation mosaics). IRAC inputs are cached under
+        ``data_dir / "irac"``.
 
     Returns
     -------
@@ -984,6 +1038,23 @@ def run_forced_photometry(
                     result.flux_quality, wflux, np.nan)
                 result.flux_errs_ujy[band] = np.where(
                     result.flux_quality, werr, np.nan)
+
+    irac_targets = tuple(target_bands["irac"])
+    if irac_targets:
+        from .irac.pipeline import fit_irac_forced
+        if verbose:
+            print(f"[+] IRAC forced phot: {', '.join(irac_targets)}")
+        options = {"mosaic_backend": "seip", **(irac_options or {})}
+        result.irac_results = fit_irac_forced(
+            result.sources, target_ra, target_dec, cutout_size_arcsec,
+            irac_targets, data_dir=data_dir / "irac",
+            force_download=force_download, verbose=verbose, **options)
+        for band, r in result.irac_results.items():
+            # As for NISP and WISE: NaN where the prior fit diverged.
+            result.fluxes_ujy[band] = np.where(
+                result.flux_quality, r["flux_ujy"], np.nan)
+            result.flux_errs_ujy[band] = np.where(
+                result.flux_quality, r["flux_err_ujy"], np.nan)
 
     if n_report is not None and len(result.sources) > n_report:
         _drop_neighbour_rows(result, n_report)

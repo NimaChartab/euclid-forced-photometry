@@ -1422,6 +1422,8 @@ def reproduce_figure3(
     save_path: str | None = None,
     figsize_per_panel: float = 2.8,
     vlim_sigma: float = 5.0,
+    flux_scale: float = 1.0,
+    unit: str = "image units",
 ):
     """Plot the Weaver+2023 Fig. 3-style per-tier residual panels.
 
@@ -1429,6 +1431,8 @@ def reproduce_figure3(
     row per (source, stage) trial with the model image (log stretch) and
     residual, annotated with the reduced chi^2 and a check on the accepted
     tier. σ is the sigma-clipped residual RMS outside the blob footprint.
+    ``flux_scale`` converts image units for display, e.g.
+    ``ep.viz.ujy_per_unit(cutout)`` with ``unit="µJy/pixel"``.
     """
     import matplotlib.pyplot as plt
     from astropy.stats import sigma_clipped_stats
@@ -1466,8 +1470,9 @@ def reproduce_figure3(
         return a[y0:y1, x0:x1]
 
     footprint_crop = crop(blob.footprint)
+    k = float(flux_scale)
 
-    norm_lin = Normalize(vmin=-vlim, vmax=vlim)
+    norm_lin = Normalize(vmin=-vlim * k, vmax=vlim * k)
 
     # Log stretch from the final model so all tier rows share one scale.
     model_in = crop(final.model)[footprint_crop]
@@ -1477,9 +1482,9 @@ def reproduce_figure3(
         v_lo = float(max(sigma, 1e-6))
         if v_hi <= v_lo:
             v_hi = v_lo * 10
-        norm_log = LogNorm(vmin=v_lo, vmax=v_hi)
+        norm_log = LogNorm(vmin=v_lo * k, vmax=v_hi * k)
     else:
-        norm_log = LogNorm(vmin=sigma, vmax=max(sigma * 100, 1e-3))
+        norm_log = LogNorm(vmin=sigma * k, vmax=max(sigma * 100, 1e-3) * k)
 
     cmap_img = "RdBu_r"
     cmap_mod = "Grays"
@@ -1488,16 +1493,16 @@ def reproduce_figure3(
                              figsize=(2 * figsize_per_panel, n_rows * figsize_per_panel),
                              squeeze=False)
 
-    axes[0, 0].imshow(crop(final.data),
+    axes[0, 0].imshow(crop(final.data) * k,
                        origin="lower", cmap=cmap_img, norm=norm_lin)
-    axes[0, 0].set_title(f"VIS data  (±{vlim_sigma:.0f}σ, σ={sigma:.3g})", fontsize=13)
-    axes[0, 1].imshow(crop(final.residual),
+    axes[0, 0].set_title(f"VIS data  (±{vlim_sigma:.0f}σ, σ={sigma * k:.3g})", fontsize=13)
+    axes[0, 1].imshow(crop(final.residual) * k,
                        origin="lower", cmap=cmap_img, norm=norm_lin)
     axes[0, 1].set_title(f"Final residual  (±{vlim_sigma:.0f}σ)", fontsize=13)
 
     for r, rec in enumerate(history.stages, start=1):
-        mod = crop(rec.model_image)
-        res = crop(rec.residual_image)
+        mod = crop(rec.model_image) * k
+        res = crop(rec.residual_image) * k
         mod_clip = np.clip(mod, norm_log.vmin, None)
         check = "  (accepted)" if rec.accepted else ""
         title_color = "darkgreen" if rec.accepted else "black"
@@ -1514,6 +1519,11 @@ def reproduce_figure3(
     for ax in axes.ravel():
         ax.set_xticks([])
         ax.set_yticks([])
+        cbar = fig.colorbar(ax.images[0], ax=ax, fraction=0.046, pad=0.03)
+        if ax.images[0].norm is norm_lin:
+            cbar.set_label(f"{unit} (±{vlim_sigma:.0f}σ)")
+        else:
+            cbar.set_label(f"model, {unit} (log)")
 
     fig.suptitle(f"Farmer-style decision tree on blob #{blob.blob_id} "
                  f"({len(history.members)} source{'s' if len(history.members) != 1 else ''})",

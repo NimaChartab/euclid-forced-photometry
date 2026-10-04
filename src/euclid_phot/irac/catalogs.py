@@ -103,12 +103,12 @@ def read_dawn_region(
             "ID": "dawn_id",
             "ALPHA_J2000": "dawn_ra",
             "DELTA_J2000": "dawn_dec",
-            "IRAC_CH1_FLUX": "dawn_irac1_flux_ujy",
-            "IRAC_CH1_FLUXERR": "dawn_irac1_fluxerr_ujy",
-            "IRAC_CH2_FLUX": "dawn_irac2_flux_ujy",
-            "IRAC_CH2_FLUXERR": "dawn_irac2_fluxerr_ujy",
-            "IRAC_CH1_VALID": "dawn_irac1_valid",
-            "IRAC_CH2_VALID": "dawn_irac2_valid",
+            "IRAC_CH1_FLUX": "dawn_flux_IRAC1_ujy",
+            "IRAC_CH1_FLUXERR": "dawn_flux_err_IRAC1_ujy",
+            "IRAC_CH2_FLUX": "dawn_flux_IRAC2_ujy",
+            "IRAC_CH2_FLUXERR": "dawn_flux_err_IRAC2_ujy",
+            "IRAC_CH1_VALID": "dawn_valid_IRAC1",
+            "IRAC_CH2_VALID": "dawn_valid_IRAC2",
             "MODEL_FLAG": "dawn_model_flag",
             "SOLUTION_MODEL": "dawn_solution_model",
             "FULL_DEPTH_PL": "dawn_full_depth",
@@ -134,12 +134,12 @@ def match_dawn_irac(
         result = photometry[:0].copy()
         result["dawn_match_sep_arcsec"] = np.asarray([], dtype=float)
         return result
-    for name in ("prior_ra", "prior_dec"):
+    for name in ("ra", "dec"):
         if name not in photometry.colnames:
             raise ValueError(f"photometry is missing {name}")
     ours = SkyCoord(
-        np.asarray(photometry["prior_ra"], float)*u.deg,
-        np.asarray(photometry["prior_dec"], float)*u.deg,
+        np.asarray(photometry["ra"], float)*u.deg,
+        np.asarray(photometry["dec"], float)*u.deg,
     )
     external = SkyCoord(
         np.asarray(dawn["dawn_ra"], float)*u.deg,
@@ -167,7 +167,7 @@ def compare_dawn(
     """Match the pipeline catalog to DAWN and flag a clean comparison sample.
 
     For each channel the returned table holds the matches, the distance to
-    the nearest other prior source (``nearest_prior_arcsec``), the flux
+    the nearest other prior source (``nearest_source_arcsec``), the flux
     ratio ``<channel>_over_dawn`` and ``comparison_selected``: both S/N at
     least ``minimum_snr``, finite positive errors, DAWN valid, and no prior
     neighbour within ``isolation_arcsec``.
@@ -180,8 +180,8 @@ def compare_dawn(
                      else float(isolation_arcsec))
     snr_min = defaults["minimum_snr"] if minimum_snr is None else float(minimum_snr)
 
-    positions = SkyCoord(np.asarray(photometry["prior_ra"], float)*u.deg,
-                         np.asarray(photometry["prior_dec"], float)*u.deg)
+    positions = SkyCoord(np.asarray(photometry["ra"], float)*u.deg,
+                         np.asarray(photometry["dec"], float)*u.deg)
     if len(positions) > 1:
         _, nearest, _ = positions.match_to_catalog_sky(positions, nthneighbor=2)
         nearest = nearest.arcsec
@@ -193,28 +193,28 @@ def compare_dawn(
                                   max_separation_arcsec=radius)
     comparisons = {}
     for channel in channels:
-        key = str(channel).lower()
-        if f"dawn_{key}_flux_ujy" not in matches_all.colnames:
+        band = str(channel).upper()
+        if f"dawn_flux_{band}_ujy" not in matches_all.colnames:
             raise ValueError(f"the public DAWN PL catalog has no {channel} "
                              "photometry; use IRAC1 and/or IRAC2")
         matches = matches_all.copy()
-        matches["nearest_prior_arcsec"] = [
+        matches["nearest_source_arcsec"] = [
             isolation[object_id] for object_id in matches["object_id"].tolist()]
-        ours = np.asarray(matches[f"flux_{key}_ujy"], float)
-        ours_err = np.asarray(matches[f"fluxerr_{key}_ujy"], float)
-        dawn_flux = np.asarray(matches[f"dawn_{key}_flux_ujy"], float)
-        dawn_err = np.asarray(matches[f"dawn_{key}_fluxerr_ujy"], float)
+        ours = np.asarray(matches[f"flux_{band}_ujy"], float)
+        ours_err = np.asarray(matches[f"flux_err_{band}_ujy"], float)
+        dawn_flux = np.asarray(matches[f"dawn_flux_{band}_ujy"], float)
+        dawn_err = np.asarray(matches[f"dawn_flux_err_{band}_ujy"], float)
         with np.errstate(divide="ignore", invalid="ignore"):
             selected = (
                 np.isfinite(ours) & np.isfinite(ours_err)
                 & np.isfinite(dawn_flux) & np.isfinite(dawn_err)
                 & (ours_err > 0) & (dawn_err > 0)
                 & (ours / ours_err >= snr_min) & (dawn_flux / dawn_err >= snr_min)
-                & (np.asarray(matches["nearest_prior_arcsec"]) >= isolation_min)
+                & (np.asarray(matches["nearest_source_arcsec"]) >= isolation_min)
             )
-            matches[f"{key}_over_dawn"] = ours / dawn_flux
-        if f"dawn_{key}_valid" in matches.colnames:
-            selected &= np.asarray(matches[f"dawn_{key}_valid"], bool)
+            matches[f"{band}_over_dawn"] = ours / dawn_flux
+        if f"dawn_valid_{band}" in matches.colnames:
+            selected &= np.asarray(matches[f"dawn_valid_{band}"], bool)
         matches["comparison_selected"] = selected
         comparisons[channel] = matches
     return comparisons
@@ -232,11 +232,11 @@ def select_dawn_disagreements(
     Starts from ``comparison_selected`` and additionally requires positive
     fluxes and S/N of at least ``minimum_snr`` in both catalogs.
     """
-    key = str(channel).lower()
-    flux = np.asarray(comparison[f"flux_{key}_ujy"], float)
-    err = np.asarray(comparison[f"fluxerr_{key}_ujy"], float)
-    dawn_flux = np.asarray(comparison[f"dawn_{key}_flux_ujy"], float)
-    dawn_err = np.asarray(comparison[f"dawn_{key}_fluxerr_ujy"], float)
+    band = str(channel).upper()
+    flux = np.asarray(comparison[f"flux_{band}_ujy"], float)
+    err = np.asarray(comparison[f"flux_err_{band}_ujy"], float)
+    dawn_flux = np.asarray(comparison[f"dawn_flux_{band}_ujy"], float)
+    dawn_err = np.asarray(comparison[f"dawn_flux_err_{band}_ujy"], float)
     with np.errstate(divide="ignore", invalid="ignore"):
         snr, dawn_snr = flux / err, dawn_flux / dawn_err
         ratio = flux / dawn_flux
@@ -254,11 +254,11 @@ def select_dawn_disagreements(
     if top_n is not None:
         selected = selected[:int(top_n)]
     return selected[[
-        "object_id", "prior_ra", "prior_dec", "source_model",
-        f"flux_{key}_ujy", f"fluxerr_{key}_ujy",
-        f"dawn_{key}_flux_ujy", f"dawn_{key}_fluxerr_ujy",
+        "object_id", "ra", "dec", "model",
+        f"flux_{band}_ujy", f"flux_err_{band}_ujy",
+        f"dawn_flux_{band}_ujy", f"dawn_flux_err_{band}_ujy",
         "snr", "dawn_snr", "over_dawn", "disagreement_dex",
-        "difference_sigma", "nearest_prior_arcsec", "dawn_match_sep_arcsec",
+        "difference_sigma", "nearest_source_arcsec", "dawn_match_sep_arcsec",
     ]]
 
 
@@ -270,32 +270,35 @@ def compare_wise_irac(
     *,
     pairs=None,
     minimum_snr: float = 5.0,
-    isolation_arcsec: float = 13.88,
+    isolation_arcsec: float | None = None,
     flux_fraction: float = 1.0 / 3.0,
 ) -> dict[str, Table]:
     """Compare unWISE and IRAC fluxes fitted with the same VIS models.
 
     ``comparison_selected`` requires S/N of at least ``minimum_snr`` in both
     bands and no VIS neighbour brighter than ``flux_fraction`` of the source
-    within ``isolation_arcsec`` (two WISE FWHM), the isolation criterion of
-    notebook 03.
+    within ``isolation_arcsec`` (default two WISE FWHM), the isolation
+    criterion of notebook 03.
     """
-    from ..wise import select_isolated_sources
+    from ..wise import _WISE_FWHM_ARCSEC, select_isolated_sources
+
+    if isolation_arcsec is None:
+        isolation_arcsec = 2.0 * _WISE_FWHM_ARCSEC
 
     pairs = WISE_IRAC_PAIRS if pairs is None else dict(pairs)
     isolated = select_isolated_sources(
-        np.asarray(photometry["prior_ra"], float),
-        np.asarray(photometry["prior_dec"], float),
-        np.asarray(photometry["flux_vis_ujy"], float),
+        np.asarray(photometry["ra"], float),
+        np.asarray(photometry["dec"], float),
+        np.asarray(photometry["flux_VIS_ujy"], float),
         radius_arcsec=isolation_arcsec, flux_fraction=flux_fraction,
     )
     comparisons = {}
     for wise_band, channel in pairs.items():
-        w, c = wise_band.lower(), channel.lower()
+        w, c = wise_band.upper(), channel.upper()
         wise_flux = np.asarray(photometry[f"flux_{w}_ujy"], float)
-        wise_err = np.asarray(photometry[f"fluxerr_{w}_ujy"], float)
+        wise_err = np.asarray(photometry[f"flux_err_{w}_ujy"], float)
         irac_flux = np.asarray(photometry[f"flux_{c}_ujy"], float)
-        irac_err = np.asarray(photometry[f"fluxerr_{c}_ujy"], float)
+        irac_err = np.asarray(photometry[f"flux_err_{c}_ujy"], float)
         with np.errstate(divide="ignore", invalid="ignore"):
             selected = (
                 isolated & (wise_err > 0) & (irac_err > 0)
@@ -303,9 +306,9 @@ def compare_wise_irac(
                 & (irac_flux / irac_err >= minimum_snr)
             )
             ratio = wise_flux / irac_flux
-        table = photometry["object_id", "prior_ra", "prior_dec", "source_model",
-                           f"flux_{w}_ujy", f"fluxerr_{w}_ujy",
-                           f"flux_{c}_ujy", f"fluxerr_{c}_ujy"].copy()
+        table = photometry["object_id", "ra", "dec", "model",
+                           f"flux_{w}_ujy", f"flux_err_{w}_ujy",
+                           f"flux_{c}_ujy", f"flux_err_{c}_ujy"].copy()
         table["isolated"] = isolated
         table[f"{w}_over_{c}"] = ratio
         table["comparison_selected"] = selected

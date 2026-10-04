@@ -24,5 +24,3 @@ dist/
 /photometry.csv
 /photometry.ecsv
 
-# IRAC run exports
-examples/output/
