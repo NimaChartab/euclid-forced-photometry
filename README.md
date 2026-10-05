@@ -1,8 +1,9 @@
 # Euclid forced photometry
 
 Measure fluxes on Euclid Q1 VIS and NISP images using Tractor source models,
-with optional unWISE W1/W2 photometry. VIS constrains the source profiles;
-the lower-resolution fits keep those profiles fixed and solve for flux.
+with optional unWISE W1/W2 and Spitzer/IRAC photometry. VIS constrains the
+source profiles; the lower-resolution fits keep those profiles fixed and
+solve for flux.
 
 This is an educational analysis package. It provides explicit diagnostics
 and limited validation tests; users must assess the PSF, residuals, source
@@ -12,14 +13,18 @@ list and uncertainty assumptions for their own science sample.
 
 - [00: Modeling a galaxy with the Tractor](notebooks/00_how_tractor_works.ipynb): one galaxy,
   with image construction, model parameters and optimization written out.
-- [01: Multi-band forced photometry on Euclid Q1 data](notebooks/01_multiband_forced_photometry.ipynb):
+- [01: Forced photometry on Euclid NISP with a VIS prior](notebooks/01_nisp_forced_photometry.ipynb):
   a 200-arcsec field, source models on VIS, forced fluxes in Y, J and H,
   residuals and catalog checks.
 - [02: Forced photometry on unWISE W1 and W2](notebooks/02_wise_forced_photometry.ipynb):
   the same field on unWISE W1 and W2, with residuals and a catalog cross-check.
-- [03: Multi-band photometry in one call](notebooks/03_one_call.ipynb): a compact 50-arcsec
-  Euclid run and the resulting catalog. WISE is optional.
-- [04: Photometry at supplied coordinates](notebooks/04_photometry_at_coordinates.ipynb):
+- [03: Forced photometry on Spitzer/IRAC](notebooks/03_irac_forced_photometry.ipynb):
+  a 200-arcsec field in EDF-F, IRAC channels 1-4 with a spatially varying
+  effective PRF, residuals, and comparisons with the DAWN catalog and unWISE.
+- [04: Multi-band photometry in one call](notebooks/04_one_call.ipynb): a compact
+  50-arcsec run measuring Euclid, unWISE and IRAC bands in one call, and the
+  resulting catalog.
+- [05: Photometry at supplied coordinates](notebooks/05_photometry_at_coordinates.ipynb):
   photometry at user positions without a MER source list.
 - [Supporting: Model selection](notebooks/supporting_notebooks/model_selection.ipynb):
   the profile trials for one pair of neighbouring sources.
@@ -27,7 +32,7 @@ list and uncertainty assumptions for their own science sample.
   matching-PSF point-source checks on real backgrounds.
 
 Start with 00 to learn the fitting model, 01 to inspect the full workflow,
-or 03 for a short working example.
+or 04 for a short working example.
 
 ## Install and run
 
@@ -43,7 +48,8 @@ jupyter lab notebooks/
 
 The install script uses an active virtualenv or conda environment, or creates
 `.venv`. It installs this package plus the required Tractor and astrometry.net
-components. WISE additionally requires `unwise_psf` and its dependencies.
+components. WISE additionally requires `unwise_psf` and its dependencies;
+IRAC needs nothing extra.
 Use a Jupyter kernel from that environment. If the script created `.venv`,
 activate it with `source .venv/bin/activate` before starting Jupyter.
 
@@ -63,7 +69,7 @@ import euclid_phot as ep
 result = ep.run_forced_photometry(
     269.48, 67.30, 50.0,  # RA, Dec in degrees; box side in arcsec
     prior={"band": "VIS", "objects": "mer", "model_selection": "tree"},
-    target_bands={"euclid": ("Y", "J", "H"), "wise": ()},
+    target_bands={"euclid": ("Y", "J", "H"), "wise": (), "irac": ()},
     psf_product="grid", persource_psf=True,
     mask_bright_stars=True, with_flag=True, calibrate_errors=True,
     data_dir=Path("examples/native_data"), n_workers=4,
@@ -84,11 +90,35 @@ uses its nearest sample inside a joint fit. Images retain their delivered
 MER pixels. A cutout spanning multiple MER tiles needs separate tile fits.
 
 The package also supports supplied coordinates and selected profile classes;
-see [notebook 04](notebooks/04_photometry_at_coordinates.ipynb) and
+see [notebook 05](notebooks/05_photometry_at_coordinates.ipynb) and
 `help(ep.run_forced_photometry)`. With the tree, unlisted neighbours detected
 in the same blob are added to the model; with an explicit profile class the
 supplied list must include them. The command-line entry point is
-`euclid-phot run --help`.
+`euclid-phot run --help`; `--wise` and `--irac` add those bands.
+
+## IRAC
+
+IRAC is a target like NISP and WISE. This example also fits W1 and W2,
+which needs the `--wise` install:
+
+```python
+result = ep.run_forced_photometry(
+    52.932, -28.088, 200.0,
+    prior={"band": "VIS", "objects": "mer", "model_selection": "tree"},
+    target_bands={"euclid": (), "wise": ("W1", "W2"),
+                  "irac": ("IRAC1", "IRAC2", "IRAC3", "IRAC4")},
+    irac_options={"mosaic_backend": "dawn"},  # or "seip" (default), "pbcd"
+    psf_product="grid", mask_bright_stars=True,
+    data_dir=Path("examples/native_data"), n_workers=4,
+)
+catalog = result.to_table()  # adds flux_IRAC1_ujy, flux_err_IRAC1_ujy, ...
+```
+
+Each IRAC channel uses a spatially varying effective PRF rebuilt from the
+detector PRFs and the exposures in the mosaic. `flux_err_IRAC<n>_ujy`
+includes a 2% PRF systematic. `result.image_set(band)` returns the data,
+model and residual images of the prior band and of every WISE and IRAC
+band. See [notebook 03](notebooks/03_irac_forced_photometry.ipynb).
 
 ## Interpreting results
 
@@ -100,22 +130,29 @@ records PSF conventions, uncertainty definitions and error-scale factors.
 or at the cutout edge. `blended` marks a close neighbour.
 
 Euclid errors are conditional template errors, optionally scaled using
-empty-position point-source fits. WISE uses a residual-based scale factor.
-Neither treatment captures all blending, morphology, PSF or sky uncertainty.
+empty-position point-source fits. WISE and IRAC use a residual-based scale
+factor, and IRAC errors add a 2% effective-PRF systematic in quadrature.
+None of these treatments captures all blending, morphology, PSF or sky
+uncertainty.
 The reported five-times-median-error magnitude is an error summary, not a
 measured detection-completeness limit.
 
 Shared morphology can fail for color gradients or infrared-only emission.
 Structured residuals and sensitivity to neighbouring models require inspection.
 The example retains a few-percent NISP/MER difference; it should not be removed
-by tuning a PSF to force catalog agreement. WISE blends also remain sensitive
-to PSF shape and source-list completeness.
+by tuning a PSF to force catalog agreement. WISE and IRAC blends also remain
+sensitive to PSF shape and source-list completeness. The WISE fit adds unWISE
+catalog sources outside the field; the IRAC fit models only the VIS sources
+inside it, so IRAC fluxes within a few arcsec of the edge can absorb light
+from outside. Request a slightly larger field when the edge matters.
 
 The [Schlafly et al. (2019) unWISE catalog](https://ui.adsabs.harvard.edu/abs/2019ApJS..240...30S) uses
 a different PSF normalization. Notebook 02 transfers our fitted amplitudes
 to that convention for its comparison only; exported fluxes retain their
 fitting convention. Agreement with that catalog is a cross-check, not an
-absolute calibration or proof of individual blended flux accuracy.
+absolute calibration or proof of individual blended flux accuracy. The same
+holds for the DAWN catalog comparison in notebook 03. W1 and W2 differ in
+bandpass from IRAC1 and IRAC2, so their ratios depend on source colour.
 
 Matching-PSF injections test rendering and recovery consistency. They do not
 validate the real PSF, galaxy morphology, blind detection completeness, or
@@ -124,6 +161,11 @@ all uncertainty contributions. The injection notebook states the tested scope.
 ## References
 
 The image modelling uses [The Tractor](https://github.com/dstndstn/tractor).
+The IRAC effective PRF follows [PRFMAP](https://github.com/cosmic-dawn/prfmap)
+with the detector PRFs and flux corrections of the
+[IRAC Instrument Handbook](https://irsa.ipac.caltech.edu/data/SPITZER/docs/irac/iracinstrumenthandbook/);
+IRAC extinction coefficients are from
+[Indebetouw et al. (2005)](https://ui.adsabs.harvard.edu/abs/2005ApJ...619..931I).
 Euclid reference flux definitions are documented in the
 [MER photometry cookbook](https://euclid.esac.esa.int/dr/q1/dpdd/merdpd/merphotometrycookbook.html).
 Please cite the relevant survey and method papers when using their data or methods.

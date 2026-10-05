@@ -6,6 +6,7 @@ from pathlib import Path
 MER_COLLECTION = "euclid_DpdMerBksMosaic"
 
 UNWISE_PIXEL_SCALE = 2.75
+WISE_FWHM_ARCSEC = 6.94  # representative unWISE PSF FWHM
 
 # Default search radius for IRSA SIA tile discovery. Padded so a 50″ cutout
 # still finds every overlapping MER tile (each tile is ~32′ across).
@@ -50,6 +51,12 @@ EXTINCTION_COEFF = {
     "H":   3.1 * 0.160,   # 0.496
     "W1":  0.19,          # Yuan et al. 2013, MNRAS 430, 2188
     "W2":  0.15,
+    # Indebetouw et al. 2005, ApJ 619, 931: A_lambda/A_K = 0.56, 0.43,
+    # 0.43, 0.43 with A_K/E(B-V) = 0.353 for R_V = 3.1.
+    "IRAC1": 0.198,
+    "IRAC2": 0.152,
+    "IRAC3": 0.152,
+    "IRAC4": 0.152,
 }
 
 WISE_COADD_VERSION = "neo7"

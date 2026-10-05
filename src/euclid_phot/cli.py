@@ -24,6 +24,12 @@ def _add_common(p: argparse.ArgumentParser):
                         "(default: %(default)s; '' for prior band only)")
     p.add_argument("--wise", default="",
                    help="comma-separated WISE bands (W1,W2); default none")
+    p.add_argument("--irac", default="",
+                   help="comma-separated IRAC channels (IRAC1,...,IRAC4); "
+                        "default none")
+    p.add_argument("--irac-backend", default="seip",
+                   choices=("seip", "dawn", "pbcd"),
+                   help="IRAC mosaics (default: %(default)s)")
     p.add_argument("--no-calibrate-errors", action="store_true",
                    help="skip the empirical error calibration")
     p.add_argument("--psf-product", default="auto",
@@ -40,7 +46,9 @@ def _build_kwargs(args) -> dict:
     return dict(
         prior={"band": args.prior_band, "objects": args.objects},
         target_bands={"euclid": _parse_bands(args.bands),
-                      "wise": _parse_bands(args.wise)},
+                      "wise": _parse_bands(args.wise),
+                      "irac": _parse_bands(args.irac)},
+        irac_options={"mosaic_backend": args.irac_backend},
         data_dir=args.data_dir,
         calibrate_errors=not args.no_calibrate_errors,
         psf_product=args.psf_product,
@@ -51,7 +59,7 @@ def _build_kwargs(args) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="euclid-phot",
-        description="Forced photometry on Euclid Q1 (+unWISE) with Tractor.")
+        description="Forced photometry on Euclid Q1 (+unWISE, IRAC) with Tractor.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser("run", help="measure a single cutout")

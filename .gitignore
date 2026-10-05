@@ -23,3 +23,4 @@ dist/
 .ruff_cache/
 /photometry.csv
 /photometry.ecsv
+

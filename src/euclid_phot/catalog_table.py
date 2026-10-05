@@ -15,7 +15,8 @@ from __future__ import annotations
 import numpy as np
 
 _AB_ZP_UJY = 23.9
-_BAND_ORDER = ("VIS", "Y", "J", "H", "W1", "W2")
+_BAND_ORDER = ("VIS", "Y", "J", "H", "W1", "W2",
+               "IRAC1", "IRAC2", "IRAC3", "IRAC4")
 
 
 def _model_re_arcsec(sources):
@@ -168,6 +169,17 @@ def build_catalog(result, *, origin: str | None = None,
             "x empirical residual chi-inflation; excludes blend and sky "
             "covariance and model mismatch. Not calibrated against an "
             "external catalogue; the source-sparse residual scale is heuristic")
+    if any(b.startswith("IRAC") for b in result.fluxes_ujy):
+        from .irac.config import IRAC_PRF_SYSTEMATIC_FRACTION
+        error_origin["IRAC"] = (
+            "conditional template errors from the mosaic uncertainty map x "
+            "empirical residual chi-inflation, plus a "
+            f"{IRAC_PRF_SYSTEMATIC_FRACTION:.0%} effective-PRF systematic in "
+            "quadrature; excludes blend covariance and model mismatch")
+        tab.meta["irac_flux_convention"] = (
+            "Fitted amplitudes with unit-sum effective PRF stamps, multiplied "
+            "by the IRAC Instrument Handbook core-PRF to infinite-aperture "
+            "correction per channel.")
     wise_results = getattr(result, "wise_results", None) or {}
     if wise_results:
         tab.meta["wise_psf_normalization"] = {

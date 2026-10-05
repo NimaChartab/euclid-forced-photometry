@@ -55,12 +55,13 @@ from tractor.galaxy import disable_galaxy_cache
 from tractor.psf import PixelizedPSF
 from tractor.wcs import ConstantFitsWcs
 
-from .config import DEFAULT_WISE_CACHE_DIR, UNWISE_PIXEL_SCALE, WISE_COADD_VERSION
+from .config import (DEFAULT_WISE_CACHE_DIR, UNWISE_PIXEL_SCALE, WISE_COADD_VERSION,
+                     WISE_FWHM_ARCSEC)
 from .images import AstropyWCSAdapter
 
 _UJY_PER_NMGY = 3.631
 _VEGA_OFFSET = {"W1": 2.699, "W2": 3.339}
-_WISE_FWHM_ARCSEC = 6.94
+_WISE_FWHM_ARCSEC = WISE_FWHM_ARCSEC
 
 
 def vega_mag_to_ujy(mag_vega, band: str):
@@ -856,3 +857,62 @@ def fit_wise_forced(sources, wise_cutouts: dict, *,
             results[band]["fit_image"] = tim
             results[band]["fit_sources"] = band_sources
     return results
+
+
+def compare_unwise_2019(sources, wise_results, unwise_catalog, psf_stamps, *,
+                        vis_flux, flux_quality=None, match_radius_arcsec=1.0,
+                        minimum_snr=5.0):
+    """Match a WISE fit to the Schlafly et al. (2019) unWISE catalog.
+
+    Schlafly et al. normalize their PSF within the central 19x19 pixels, so
+    our full-stamp fluxes and errors are scaled by that fraction of the
+    adopted PSF for the comparison only. Returns ``{band: Table}`` aligned
+    with ``sources``: ``catalog_flux_ujy``, ``catalog_flux_err_ujy``,
+    ``flux_ujy`` and ``flux_err_ujy`` (19x19 convention), ``snr``,
+    ``selected`` (unique match to a primary, unflagged detection with
+    positive finite fluxes), ``isolated`` (no VIS neighbour brighter than a
+    third of the source within two WISE FWHM) and ``clean`` (selected,
+    isolated and ``snr > minimum_snr``). ``meta`` holds the PSF factor.
+    """
+    from astropy.coordinates import SkyCoord
+    from astropy.table import Table
+
+    ra = np.array([float(s.getPosition().ra) for s in sources])
+    dec = np.array([float(s.getPosition().dec) for s in sources])
+    idx, sep, _ = SkyCoord(ra, dec, unit="deg").match_to_catalog_sky(
+        SkyCoord(unwise_catalog["ra"], unwise_catalog["dec"], unit="deg"))
+    matched = sep.arcsec < match_radius_arcsec
+    multiplicity = np.bincount(idx[matched], minlength=len(unwise_catalog))
+    unique = matched & (multiplicity[idx] == 1)
+    isolated = select_isolated_sources(ra, dec, vis_flux,
+                                       radius_arcsec=2 * WISE_FWHM_ARCSEC)
+    quality = (np.ones(len(sources), bool) if flux_quality is None
+               else np.asarray(flux_quality, bool))
+
+    out = {}
+    for band, r in wise_results.items():
+        psf = psf_stamps[band]
+        cy, cx = np.array(psf.shape) // 2
+        factor = float(psf[cy - 9:cy + 10, cx - 9:cx + 10].sum() / psf.sum())
+        flux = np.asarray(r["flux_ujy"], float) * factor
+        err = np.asarray(r["flux_err_ujy"], float) * factor
+        ref = np.asarray(unwise_catalog[band.lower() + "_ujy"], float)[idx]
+        ref_err = np.asarray(unwise_catalog[band.lower() + "_err_ujy"], float)[idx]
+        primary = np.asarray(np.ma.filled(
+            unwise_catalog["primary_" + band[1]], 0))[idx] == 1
+        unflagged = np.asarray(np.ma.filled(
+            unwise_catalog["flags_unwise_" + band[1]], -1))[idx] == 0
+        snr = np.divide(flux, err, out=np.zeros_like(flux), where=err > 0)
+        selected = (unique & primary & unflagged & quality
+                    & np.isfinite(flux) & (flux > 0) & np.isfinite(err) & (err > 0)
+                    & np.isfinite(ref) & (ref > 0)
+                    & np.isfinite(ref_err) & (ref_err > 0))
+        table = Table({"catalog_flux_ujy": ref, "catalog_flux_err_ujy": ref_err,
+                       "flux_ujy": flux, "flux_err_ujy": err, "snr": snr,
+                       "selected": selected, "isolated": isolated,
+                       "clean": selected & isolated & (snr > minimum_snr)})
+        table.meta.update(psf_factor=factor, n_catalog=len(unwise_catalog),
+                          n_unique=int(unique.sum()), minimum_snr=minimum_snr)
+        out[band] = table
+    return out
+
