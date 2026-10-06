@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Nima Chartab", email = "n.chartab@ipac.caltech.edu" },
+    { name = "Nima Chartab"},
+    { name = "Shoubaneh Hemmati"},
+    { name = "Yu-Heng Lin"},
 ]
 keywords = ["astronomy", "photometry", "euclid", "tractor", "forced-photometry", "irsa"]
 classifiers = [
